@@ -1,14 +1,11 @@
-
 import torch
 import numpy as np
+import unittest
 
 from .regularizer import Regularizer
 from .conv import *
 
-import unittest
-
 __all__ = ['TDV']
-
 
 class StudentT_fun2(torch.autograd.Function):
     @staticmethod

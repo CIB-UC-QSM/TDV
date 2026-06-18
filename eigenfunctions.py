@@ -16,7 +16,7 @@ color = 'color'
 
 # define the number of gradient steps and step size
 num_iter = 1000
-tau = 0.05
+tau = 0.01
 
 # load a test image
 x_orig = imageio.imread(os.path.join('data','face.jpg')).astype(np.float32)/255
@@ -36,7 +36,7 @@ for p in vn.R.parameters():
     p.requires_grad_(False)
 
 # push the images to torch
-x = torch.from_numpy(np.transpose(x_orig, (2,0,1))[None]).cuda()
+x = torch.from_numpy(np.transpose(x_orig, (2,0,1))[None]).cuda().contiguous()
 
 # create mask to smooth out the boundary
 m, n, c = x_orig.shape

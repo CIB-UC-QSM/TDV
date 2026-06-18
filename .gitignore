@@ -1,0 +1,23 @@
+# Excluir entornos virtuales (creados por uv o venv)
+.venv/
+venv/
+ENV/
+
+# Excluir la carpeta paralela de optox (si es que quedó dentro o accidentalmente la referencias)
+# Si optox está estrictamente afuera, esto sirve por seguridad:
+../optox/
+optox/
+
+# Excluir archivos compilados de Python y cachés
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+
+# Archivos de sistema o checkpoints grandes que no quieras subir (ej. pesos del modelo)
+*.pt
+*.pth
+*.ckpt
+.DS_Store

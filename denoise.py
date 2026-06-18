@@ -1,13 +1,10 @@
 import os
-
-import imageio
-
 import numpy as np
+import imageio
 import torch
+import matplotlib.pyplot as plt
 
 import model
-
-import matplotlib.pyplot as plt
 
 # select color or gray-scale
 # color = 'gray'
@@ -28,7 +25,17 @@ checkpoint = torch.load(os.path.join('checkpoints', f'tdv3-3-25-f32-{color}.pth'
 sigma_ref = 25
 
 # get the variational network with the TDV regularizer
-vn = model.VNet(checkpoint['config'], efficient=False)
+# --- MODIFICACIÓN ---
+config = checkpoint['config']
+
+# cambiamos el tipo de término de datos a 'blur'/'qsm' o 'denoise'
+config['D']['type'] = 'blur'
+
+# desactivamos el uso de proximales para usar descenso de gradiente explícito
+config['D']['config']['use_prox'] = False
+
+# inicializamos la red con la configuración modificada
+vn = model.VNet(config, efficient=False)
 vn.load_state_dict(checkpoint['model'])
 vn.cuda()
 
@@ -46,8 +53,8 @@ def apply_vn(x_0, z):
     return x
 
 # push the images to torch
-y_th = torch.from_numpy(np.transpose(y, (2,0,1))[None]).cuda()
-z_th = torch.from_numpy(np.transpose(z, (2,0,1))[None]).cuda()
+y_th = torch.from_numpy(np.transpose(y, (2,0,1))[None]).cuda().contiguous()
+z_th = torch.from_numpy(np.transpose(z, (2,0,1))[None]).cuda().contiguous()
 
 with torch.no_grad():
     x_th = apply_vn(z_th, z_th)
