@@ -6,8 +6,7 @@ import matplotlib.pyplot as plt
 
 import model
 
-# select color or gray-scale
-# color = 'gray'
+# select color or gray-scale / 'color' o 'gray'
 color = 'color'
 
 # define the noise level

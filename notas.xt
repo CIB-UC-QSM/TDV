@@ -1,0 +1,20 @@
+Subproblema $\chi$ (Física Pura): 
+Ignora por un momento a la red neuronal. Resuelve matemáticamente en el K-space
+ dónde se minimiza la distancia a tus datos utilizando una matriz de inversión directa. 
+ Como no hay aproximaciones de gradiente aquí, es una solución algebraicamente perfecta, 
+ pero que arrastra los molestos artefactos de líneas (streaking artifacts) por las 
+ divisiones por cero del ángulo mágico.
+
+Subproblema $z$ (Geometría Pura): 
+Toma la imagen con líneas y ruido del paso anterior y se la entrega a TDV. Como TDV fue
+ entrenado para "limpiar imágenes naturales", procesa este mapa exactamente como si fuera
+  una tarea de remoción de ruido (denoising) convencional, puliendo las líneas y 
+  suavizando los artefactos sin destruir la anatomía subyacente.
+
+Multiplicador de Lagrange ($s$): 
+Mide la discrepancia acumulada entre la física ($\chi$) y la geometría ($z$), aplicando 
+una corrección de sesgo para obligar a ambas variables a converger al mismo mapa óptimo 
+final en la siguiente iteración.Por eso el enfoque ADMM es tan poderoso: te permite 
+incrustar el checkpoint pre-entrenado de eliminación de ruido que ya tienes, de manera 
+directa en el subproblema $z$, resolviendo QSM sin tocar una sola capa convolucional 
+de la CNN.
