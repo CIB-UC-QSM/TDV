@@ -1,5 +1,6 @@
 import torch
 import torch.utils.checkpoint as cp
+import numpy as np
 
 from ddr import TDV
 
@@ -73,43 +74,94 @@ class BlurDenoiseDataterm(Dataterm):
         return At_residual
 
 class QSMDataterm(Dataterm):
-    # partimos por implementar QSM en 2D, osea una slice. Considerando que una imagen a color es soportada,
-    # y en QSM solo tenemos valores entre -1 y 1, habra que ver como funciona trasladar esas capacidades
-    # a esta clase (o si es mejor crear otra). 
+    """
+    QSM data fidelity term: ½‖W(Dχ - φ)‖²
+    
+    Operates in 2D (per-slice) for use inside VNet.
+    D is the dipole kernel in k-space (Fourier domain), real and symmetric.
+    W is an optional magnitude weight (spatial domain).
+    
+    Config keys:
+        dipole_kernel (np.ndarray): 2D dipole kernel in k-space
+        weight (np.ndarray, optional): magnitude weight W (not W²)
+        use_prox (bool): required by VNet, determines prox vs grad usage
+    """
 
     def __init__(self, config):
         super(QSMDataterm, self).__init__(config)
-        # El constructor guardará el kernel dipolar 2D precalculado.
-        self.D = torch.from_numpy(config['dipole_kernel']).cuda().float()
-
+        # Register as buffers so they follow model.to(device) automatically
+        D = torch.from_numpy(config['dipole_kernel'].astype(np.float32))
+        self.register_buffer('D', D)
+        self.register_buffer('D2', D * D)  # |D|² precomputed for prox
+        
+        # Optional magnitude weighting
+        if 'weight' in config and config['weight'] is not None:
+            W = torch.from_numpy(config['weight'].astype(np.float32))
+            self.register_buffer('W2', W * W)  # store W²
+        else:
+            self.W2 = None
+    
+    def _forward_op(self, x):
+        """Forward model A(x) = F⁻¹{D · F{x}}
+        Applies dipole convolution in Fourier domain.
+        Handles (B, C, H, W) tensors from VNet."""
+        return torch.fft.ifft2(self.D * torch.fft.fft2(x)).real
+    
+    def _adjoint_op(self, x):
+        """Adjoint A^T(x). For QSM, D is real and symmetric in k-space,
+        so A^T = A (self-adjoint)."""
+        return self._forward_op(x)
+    
+    def energy(self, x, z):
+        """Per-pixel energy: ½·W²·(Ax - z)²
+        Used for monitoring convergence and training loss."""
+        residual = self._forward_op(x) - z
+        if self.W2 is not None:
+            return 0.5 * self.W2 * residual ** 2
+        return 0.5 * residual ** 2
+    
     def grad(self, x, z):
-        # x: estimación actual de la susceptibilidad (Real-space)
-        # z: mapa de fase local medido (Real-space)
+        """Gradient: ∇_x [½‖W(Ax-z)‖²] = A^T · W² · (Ax - z)
+        With W=I (no weights): A^T(Ax - z) = A(Ax - z) since A^T=A."""
+        residual = self._forward_op(x) - z
+        if self.W2 is not None:
+            residual = self.W2 * residual
+        return self._adjoint_op(residual)
+    
+    def prox(self, x, z, tau):
+        """Proximal operator (without weights):
+        argmin_u  ½‖u - x‖² + τ · ½‖Du - z‖²
         
-        # 1. Forward Operator A(x): Convolución dipolar en el dominio de Fourier
-        # Pasamos x al K-space usando FFT2 centrado
+        Closed-form in Fourier:
+            U = (F{x} + τ·D·F{z}) / (1 + τ·|D|²)
+        
+        Note: with spatially-varying weights W, no closed-form exists
+        in Fourier. Use grad() with use_prox=False in that case."""
         X_k = torch.fft.fft2(x)
+        Z_k = torch.fft.fft2(z)
+        U_k = (X_k + tau * self.D * Z_k) / (1 + tau * self.D2)
+        return torch.fft.ifft2(U_k).real
+    
+    @staticmethod
+    def project_kernel_2d(kernel_3d, method='mean'):
+        """Create a 2D dipole kernel from a 3D k-space kernel.
         
-        # Multiplicamos elemento a elemento por el Kernel Dipolar D
-        # Nota: Asegúrate de manejar las dimensiones de Batch/Canales si es necesario
-        AX_k = X_k * self.D
-        
-        # Devolvemos al espacio real para calcular el residuo físico
-        Ax = torch.fft.ifft2(AX_k).real
-        
-        # 2. Calcular el residuo: A(x) - z
-        residual = Ax - z
-        
-        # 3. Adjoint Operator A^T aplicado al residuo:
-        # En QSM, el kernel dipolar en Fourier es puramente real y simétrico (D = D^*),
-        # por lo que el operador adjunto es exactamente igual al operador forward.
-        RES_k = torch.fft.fft2(residual)
-        AT_RES_k = RES_k * self.D
-        
-        # Retornamos el gradiente final al espacio real
-        grad_data = torch.fft.ifft2(AT_RES_k).real
-        
-        return grad_data
+        Args:
+            kernel_3d: 3D dipole kernel in k-space, shape (Nx, Ny, Nz)
+            method: 'mean' for projection (integrate over kz, more robust)
+                    'central' for central kz slice (sharper but noisier)
+        Returns:
+            2D kernel in k-space, shape (Nx, Ny)
+        """
+        if method == 'mean':
+            # Projection: integrate over kz → smoother, more robust
+            return np.real(kernel_3d.mean(axis=2)).astype(np.float32)
+        elif method == 'central':
+            # Central slice: D(kx, ky, kz=0)
+            nz = kernel_3d.shape[2]
+            return np.real(kernel_3d[:, :, nz // 2]).astype(np.float32)
+        else:
+            raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'central'.")
 
 class VNet(torch.nn.Module):
     """

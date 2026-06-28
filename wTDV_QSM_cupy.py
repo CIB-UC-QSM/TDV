@@ -63,13 +63,20 @@ for t in range(0, maxOuterIter):
     # update z1 - Proximal step with TDV
     for i in range(1, N[2]-1, 2):
         z = qsm[:,:,i-1:i+2]+s1[:,:,i-1:i+2]
-        # Normalizar y escalar a 256 niveles (signed int8 simétrico de -128 a 127)
-        z_scaled = cp.clip(cp.round(z * 1280.0), -128, 127)
-        z_int8 = z_scaled.astype(cp.int8)
+        # Normalizar y escalar a 256 niveles (signed int8 simétrico de -128 a 127) dinámicamente
+        z_min = float(z.min())
+        z_max = float(z.max())
+        z_range = z_max - z_min
         
-        # De-cuantizar de inmediato antes de pasar a la red neuronal
-        # para que la red reciba la fase en el rango correcto [-0.1, 0.1]
-        z_quantized = z_int8.astype(cp.float32) / 1280.0
+        if z_range > 1e-8:
+            z_norm = (z - z_min) / z_range
+            z_scaled = z_norm * 255.0 - 128.0
+            z_int8 = cp.clip(cp.round(z_scaled), -128, 127).astype(cp.int8)
+            # De-cuantizar de inmediato antes de pasar a la red neuronal
+            z_quantized = ((z_int8.astype(cp.float32) + 128.0) / 255.0) * z_range + z_min
+        else:
+            z_quantized = z
+            
         z_trans = cp.transpose(z_quantized, (2,0,1))[None]
         z_th = torch.as_tensor(z_trans, device='cuda')
         with torch.no_grad():

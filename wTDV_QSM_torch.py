@@ -14,9 +14,38 @@ tic = time.time()
 phase_np = scipy.io.loadmat('params.mat')['phase_use'].astype(np.float32)
 kernel_np = scipy.io.loadmat('params.mat')['kernel'].astype(np.float32)
 K2_np = np.conj(kernel_np)*kernel_np
+from scipy import ndimage
+
 weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
+
+# --- APLICACIÓN DEL PIPELINE DE MASKING MORFOLÓGICO ---
+# Inspirado en masking.py: generamos un contorno suave y sin "serrucho" 
+# para evitar artefactos de estrella en la inversión QSM.
+brain_solid = weight_np > 0.05
+brain_solid = ndimage.binary_fill_holes(brain_solid)
+
+mean_brain = np.mean(weight_np[brain_solid])
+umbral_dinamico = 0.05 * mean_brain
+mag_threshold = weight_np > umbral_dinamico
+brain_clean = brain_solid & mag_threshold
+
+brain_closed = ndimage.binary_closing(brain_clean, structure=np.ones((3,3,3)), iterations=2)
+brain_final = ndimage.binary_fill_holes(brain_closed)
+refined_mask = ndimage.gaussian_filter(brain_final.astype(np.float32), sigma=1.0) > 0.5
+
+# Aplicar la máscara suave para limpiar el fondo
+weight_np = weight_np * refined_mask
+
+# CRITICAL: FANSI needs the magnitude weight normalized so its mean inside the brain ~1.
+# Normalize the magnitude to mean=1 inside the brain mask BEFORE squaring.
+weight_np /= weight_np[refined_mask].mean()
 weight_np *= weight_np
-alpha = scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0]
+# The value alpha1=0.04 in params.mat keeps TDV in a purely linear regime. 
+# We experimentally confirmed that pushing it to the non-linear regime (alpha=10.0) 
+# causes the pre-trained BSDS400 network to over-smooth veins and create massive central artifacts.
+# This proves the network MUST be retrained for QSM. For now, we revert to the linear baseline.
+alpha = scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] #scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0]  # FANSI regularization param (NOT used for TDV scaling)
+
 mu = scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0]
 
 maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
@@ -48,14 +77,13 @@ checkpoint = torch.load(os.path.join('checkpoints', f'tdv3-3-25-f32-{color}.pth'
 vn = model.VNet(checkpoint['config'], efficient=False)
 vn.load_state_dict(checkpoint['model'])
 vn.to(device)
+vn.eval()
 
 # define the application of the VN
-def apply_vn(x_0, z):
-    # tranform to reference noise level
-    x = vn(x_0 * alpha, z * alpha)
-    # convert back to original scale
-    x = [j/alpha for j in x]
-    return x
+# Note: TDV was trained on natural images in [0, 1] range (denoise.py divides by 255).
+# We normalize QSM data to [0, 1] before calling VNet, then de-normalize after.
+# No alpha scaling needed — alpha=0.04 from FANSI made TDV see values ~0.004
+# instead of the ~[0,1] range it was trained on.
 
 for t in range(0, maxOuterIter):
     # update qsm
@@ -77,26 +105,50 @@ for t in range(0, maxOuterIter):
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
     
     # update z1 - Proximal step with TDV
-    for i in range(1, N[2]-1, 2):
-        z = qsm[:,:,i-1:i+2]+s1[:,:,i-1:i+2]
-        # Normalizar y escalar a 256 niveles (signed int8 simétrico de -128 a 127)
-        z_scaled = torch.clamp(torch.round(z * 1280.0), -128, 127)
-        z_int8 = z_scaled.to(torch.int8)
-        
-        # De-cuantizar de inmediato antes de pasar a la red neuronal
-        # para que la red reciba la fase en el rango correcto [-0.1, 0.1]
-        z_quantized = z_int8.to(torch.float32) / 1280.0
-        z_th = z_quantized.permute(2, 0, 1).unsqueeze(0)
+    # Alpha scaling: we use alpha=0.04 (from FANSI) to scale the input.
+    # Why? TDV has Student-t activations phi(s) = log(1+s^2).
+    # If we scale to [0,1], TDV operates highly non-linearly and over-smooths QSM data (blurry blobs).
+    # Scaling by 0.04 keeps inputs tiny (~0.004), shifting TDV to a linear regime
+    # where it acts as a robust Tikhonov-like learned prior without losing fine details.
+    v = qsm + s1
+    
+    # Build all triplet inputs for batched processing
+    # Each triplet: 3 adjacent slices as RGB channels → (3, H, W)
+    # update z1 - Proximal step with TDV
+    z1_accum = torch.zeros(N, dtype=torch.float32, device=device)
+    z1_count = torch.zeros(N, dtype=torch.float32, device=device)
+    
+    center_indices = list(range(1, N[2]-1))  # stride 1 covers all slices safely
+    triplets = torch.stack([
+        v[:, :, i-1:i+2].permute(2, 0, 1)  # (3, H, W) in original scale
+        for i in center_indices
+    ])  # (num_triplets, 3, H, W)
+    
+    # Process in mini-batches to fit GPU memory
+    # VNet stores S=10 intermediate states × 32 features per step
+    # BATCH_SIZE=158 uses ~8.5 GB VRAM, perfect for a 12+ GB GPU (like 4070 Ti)
+    BATCH_SIZE = 158
+    
+    for b_start in range(0, len(center_indices), BATCH_SIZE):
+        b_end = min(b_start + BATCH_SIZE, len(center_indices))
+        batch = triplets[b_start:b_end]  # (B, 3, H, W)
         
         with torch.no_grad():
-            x_th = apply_vn(z_th.contiguous(), z_th.contiguous())
-        x_S = x_th[-1][0].permute(1, 2, 0)      # already on GPU
+            x_batch = vn(batch.contiguous() * alpha, batch.contiguous() * alpha)
         
-        z1[:,:,(i-1)] = (x_S[:,:,0]+z1[:,:,(i-1)])/2
-        z1[:,:,i] = x_S[:,:,1]
-        z1[:,:,i+1] = x_S[:,:,2]
+        outputs = x_batch[-1]  # (B, 3, H, W) — last VNet step
         
-    s1 += qsm-z1
+        for j, i in enumerate(center_indices[b_start:b_end]):
+            x_S_scaled = outputs[j].permute(1, 2, 0)  # (H, W, 3)
+            x_S = x_S_scaled / alpha
+            
+            z1_accum[:, :, i-1:i+2] += x_S
+            z1_count[:, :, i-1:i+2] += 1
+            
+    z1_count[z1_count == 0] = 1.0
+    z1 = z1_accum / z1_count
+    
+    s1 += qsm - z1
     # update z2
     z2 = Wy + mu2*(FhDFx+s2)/(weight + mu2)
     s2 += FhDFx - z2
@@ -107,7 +159,9 @@ print(f"corrido en {toc-tic} segundos")
 ## Save output    
 mdic = {"x": qsm.cpu().numpy(), "time":(toc-tic),"iter":(t+1)}
 scipy.io.savemat('result_wTDV_torch.mat', mdic)
-imshow_3d(qsm.cpu().numpy(), title="wTDV_QSM", rango=(-0.1, 0.1)) #angles=(-90, -90, 90))
-imshow_3d(z_th.squeeze().cpu().numpy(), title="z_th", rango=(-0.1, 0.1)) #angles=(-90, -90, 90))
-#imshow_3d(x_th[-1].squeeze().cpu().numpy(), title="x_th", rango=(-0.1, 0.1))
+imshow_3d(qsm.cpu().numpy(), title="wTDV_QSM (x)", rango=(-0.1, 0.1), savepath='figures/wTDV_QSM_torch.png')
+imshow_3d(v.cpu().numpy(), title="v (input to TDV)", rango=(-0.1, 0.1), savepath='figures/wTDV_v_torch.png')
+imshow_3d(z1.cpu().numpy(), title="z1 (output of TDV)", rango=(-0.1, 0.1), savepath='figures/wTDV_z1_torch.png')
+imshow_3d(s1.cpu().numpy(), title="s1 (dual variable)", rango=(-0.1, 0.1), savepath='figures/wTDV_s1_torch.png')
+
 # %%

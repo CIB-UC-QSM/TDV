@@ -1,5 +1,7 @@
 import numpy.typing as npt
+import matplotlib
 import matplotlib.pyplot as plt
+import os
 
 def rotation_by_permutarion(im: npt.NDArray, angle: int) -> npt.NDArray:
     if angle == 90:
@@ -18,7 +20,18 @@ def imshow_3d(
     cmap: str = "gray",
     rango: tuple[float, float] | None = None,
     angles: tuple[int, int, int] | None = None,
+    savepath: str | None = None,
 ):
+    """Display or save 3 orthogonal slices of a 3D volume.
+    
+    Args:
+        savepath: If provided, save figure to this path instead of plt.show().
+                  Supports .png, .pdf, .svg. Useful for SSH without X11.
+    """
+    # Use non-interactive backend if saving to file
+    if savepath is not None:
+        matplotlib.use('Agg')
+    
     if rango is None:
         rango = (image.min(), image.max())
     if angles is None:
@@ -57,4 +70,11 @@ def imshow_3d(
         fig.suptitle(title, fontsize=32)
 
     plt.tight_layout()
-    plt.show()
+    if savepath is not None:
+        os.makedirs(os.path.dirname(savepath) if os.path.dirname(savepath) else '.', exist_ok=True)
+        fig.savefig(savepath, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved figure to: {savepath}")
+    else:
+        plt.show()
+

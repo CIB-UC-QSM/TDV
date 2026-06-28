@@ -28,3 +28,6 @@ params.mat
 # Excluir todas las imagenes .png y .mat
 *.png
 *.mat
+
+# Excluir claude
+.claude/
