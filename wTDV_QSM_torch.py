@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torch
 import scipy.io
+from scipy import ndimage
 
 import model
 from utils import imshow_3d
@@ -14,7 +15,6 @@ tic = time.time()
 phase_np = scipy.io.loadmat('params.mat')['phase_use'].astype(np.float32)
 kernel_np = scipy.io.loadmat('params.mat')['kernel'].astype(np.float32)
 K2_np = np.conj(kernel_np)*kernel_np
-from scipy import ndimage
 
 weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
 
@@ -43,10 +43,10 @@ weight_np *= weight_np
 # The value alpha1=0.04 in params.mat keeps TDV in a purely linear regime. 
 # We experimentally confirmed that pushing it to the non-linear regime (alpha=10.0) 
 # causes the pre-trained BSDS400 network to over-smooth veins and create massive central artifacts.
-# This proves the network MUST be retrained for QSM. For now, we revert to the linear baseline.
-alpha = scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] #scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0]  # FANSI regularization param (NOT used for TDV scaling)
+# This proves the network MUST be retrained for QSM.
+alpha = 0.2903 # scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] #scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0]  # FANSI regularization param (NOT used for TDV scaling)
 
-mu = scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0]
+mu = 0.0245 # scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0]
 
 maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
 tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
