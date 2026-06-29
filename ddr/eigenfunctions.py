@@ -6,7 +6,7 @@ from skimage.filters import gaussian
 import numpy as np
 import torch
 
-import model
+from . import model
 
 import matplotlib.pyplot as plt
 

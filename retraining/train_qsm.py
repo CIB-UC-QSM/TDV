@@ -53,8 +53,10 @@ for _p in (_here, _root):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import model
+from ddr import model
+# pyrefly: ignore [missing-import]
 from dataset_qsm import QSMDataset
+
 
 
 # --------------------------------------------------------------------------- #

@@ -42,7 +42,7 @@ for _p in (_here, _root):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from model import QSMDataterm
+from ddr.model import QSMDataterm
 
 
 # --------------------------------------------------------------------------- #

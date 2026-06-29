@@ -1,4 +1,6 @@
+import numpy as np
 import numpy.typing as npt
+from typing import Any
 import matplotlib
 import matplotlib.pyplot as plt
 import os
@@ -75,6 +77,4 @@ def imshow_3d(
         fig.savefig(savepath, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f"Saved figure to: {savepath}")
-    else:
         plt.show()
-

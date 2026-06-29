@@ -6,11 +6,16 @@ import torch
 import scipy.io
 from scipy import ndimage
 
-import model
-from utils import imshow_3d
+from ddr import model
+from ddr.utils import imshow_3d
 
 def print_stats(name, tensor):
-    print(f"[DEBUG] {name:<15} | Rango: {tensor.min().item():>8.4f} a {tensor.max().item():>8.4f} | Media: {tensor.mean().item():>8.4f} | Std: {tensor.std().item():>8.4f}")
+    if isinstance(tensor, (int, float)):
+        print(f"[DEBUG] {name:<15} | Valor: {tensor:>8.4f}")
+    elif torch.is_tensor(tensor) and tensor.numel() == 1:
+        print(f"[DEBUG] {name:<15} | Valor: {tensor.item():>8.4f}")
+    else:
+        print(f"[DEBUG] {name:<15} | Rango: {tensor.min().item():>8.4f} a {tensor.max().item():>8.4f} | Media: {tensor.mean().item():>8.4f} | Std: {tensor.std().item():>8.4f}")
 
 tic = time.time()
 #Load MATLAB data container
@@ -63,7 +68,7 @@ weight_np *= weight_np
 # 1. Un aplastamiento matemático del Data Fidelity (z2), ya corregido.
 # 2. Falta de escala dinámica. Ahora 'alpha' se autocalibra en Iter 0 para forzar
 #    un régimen no-lineal óptimo (Std ~0.15) en VNet, independientemente del paciente.
-mu = 0.0245
+mu = 0.0245  # Optimizacion via grid search resulta en 0.01 / ver distintos valores en mu_report.md
 
 maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
 tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
@@ -112,6 +117,8 @@ z1_count = torch.zeros(N, dtype=torch.float32, device=device)
 center_indices = list(range(1, N[2]-1))
 
 print("\n--- ESTADÍSTICAS INICIALES ---")
+print_stats("mu", mu)
+print_stats("mu2", mu2)
 print_stats("phase", phase)
 print_stats("weight (W^2)", weight)
 print_stats("Wy (W^2 * phase)", Wy)
@@ -153,9 +160,11 @@ for t in range(0, maxOuterIter):
         print(f"[FINE TUNING] Alpha calibrado matemáticamente a: {alpha:.4f}")
         print_stats("qsm (update)", qsm)
     
+    # Retomamos el cálculo original para el update (sin enmascarar)
+    # para no alterar el criterio de parada original del ADMM.
     x_update = 100*torch.sqrt(torch.mean((qsm-qsm_old) ** 2))/torch.sqrt(torch.mean((qsm) ** 2))
-    print('Iter: '+str(t)+'   Update: '+str(x_update.item()))
-    
+    #print('Iter: '+str(t)+'   Update: '+str(x_update.item()))
+
     if x_update < tolUpdate:
         break
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
@@ -219,13 +228,52 @@ for t in range(0, maxOuterIter):
 toc = time.time()    
 print(f"corrido en {toc-tic} segundos")
 
-## Save output    
-mdic = {"x": qsm.cpu().numpy(), "time":(toc-tic),"iter":(t+1)}
-scipy.io.savemat('result_wTDV_torch.mat', mdic)
-imshow_3d(qsm.cpu().numpy(), title="wTDV_QSM (x)", rango=(-0.1, 0.1), savepath='figures/wTDV_QSM_torch.png')
-imshow_3d(v.cpu().numpy(), title="v (input to TDV)", rango=(-0.1, 0.1), savepath='figures/wTDV_v_torch.png')
-imshow_3d(z1.cpu().numpy(), title="z1 (output of TDV)", rango=(-0.1, 0.1), savepath='figures/wTDV_z1_torch.png')
-imshow_3d(s1.cpu().numpy(), title="s1 (dual variable)", rango=(-0.1, 0.1), savepath='figures/wTDV_s1_torch.png')
+## Save output and Convert to NIfTI / RAS convention
+qsm_np = qsm.cpu().numpy()
+v_np = v.cpu().numpy()
+z1_np = z1.cpu().numpy()
+s1_np = s1.cpu().numpy()
+
+mdic = {"x": qsm_np, "time":(toc-tic),"iter":(t+1)}
+scipy.io.savemat('results/wTDV_QSM_torch.mat', mdic)
+
+# --- EVALUACIÓN RMSE (Data Fidelity Ponderado) EN GPU ---
+# Al no tener Ground Truth de susceptibilidad, la métrica física estándar es el Data Fidelity RMSE 
+# ponderado por la magnitud (W).
+W_torch = torch.sqrt(weight)  # weight ya está elevado al cuadrado
+diff = (FhDFx - phase) * W_torch
+ref = phase * W_torch
+rmse_val_gpu = (torch.norm(diff[mask_torch]) / torch.norm(ref[mask_torch])) * 100.0
+print(f"\n[EVALUACIÓN] RMSE de Data Fidelity Ponderado (Fase predicha vs Fase real): {rmse_val_gpu.item():.2f}%")
+
+imshow_3d(qsm_np, title="wTDV_QSM (x)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='results/wTDV_QSM_torch.png')
+imshow_3d(v_np, title="v (input to TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_v_torch.png')
+imshow_3d(z1_np, title="z1 (output of TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_z1_torch.png')
+imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_s1_torch.png')
+
+'''
+--- ESTADÍSTICAS INICIALES ---
+[DEBUG] mu              | Valor:   0.0245
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 29.9443
+[DEBUG] qsm (update)    | Rango:  -0.0960 a   0.1511 | Media:  -0.0000 | Std:   0.0048
+[DEBUG] v (qsm + s1)    | Rango:  -0.0960 a   0.1511 | Media:   0.0000 | Std:   0.0048
+[DEBUG] batch * alpha   | Rango:  -2.8739 a   4.5251 | Media:  -0.0000 | Std:   0.1458
+[DEBUG] outputs (VNet)  | Rango:  -2.6328 a   4.3086 | Media:  -0.0000 | Std:   0.1337
+[DEBUG] z1 (TDV out)    | Rango:  -0.0853 a   0.1434 | Media:   0.0000 | Std:   0.0044
+[DEBUG] s1 (dual)       | Rango:  -0.0161 a   0.0187 | Media:  -0.0000 | Std:   0.0014
+--------------------------------
+
+--- RMSE FINAL FASE PREDICHA VS FASE REAL ---
+[EVALUACIÓN] RMSE de Data Fidelity Ponderado (Fase predicha vs Fase real): 10.67%
+--------------------------------
+'''
 
 '''
 =============================================================================

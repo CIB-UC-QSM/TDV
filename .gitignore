@@ -22,12 +22,9 @@ __pycache__/
 *.ckpt
 .DS_Store
 
-# Excluir parametros cosmotest
-params.mat
-
-# Excluir todas las imagenes .png y .mat
-*.png
+# Excluir parametros cosmotest y otros archivos mat
 *.mat
+params.mat
 
 # Excluir claude
 .claude/

@@ -4,7 +4,7 @@ import imageio
 import torch
 import matplotlib.pyplot as plt
 
-import model
+from . import model
 
 # select color or gray-scale / 'color' o 'gray'
 color = 'color'
