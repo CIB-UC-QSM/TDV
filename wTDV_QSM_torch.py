@@ -18,9 +18,8 @@ K2_np = np.conj(kernel_np)*kernel_np
 
 weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
 
-# --- APLICACIÓN DEL PIPELINE DE MASKING MORFOLÓGICO ---
-# Inspirado en masking.py: generamos un contorno suave y sin "serrucho" 
-# para evitar artefactos de estrella en la inversión QSM.
+# --- MASKING MORFOLÓGICO ---
+# Generamos un contorno suave para evitar artefactos de estrella en la inversión QSM.
 brain_solid = weight_np > 0.05
 brain_solid = ndimage.binary_fill_holes(brain_solid)
 
@@ -36,17 +35,18 @@ refined_mask = ndimage.gaussian_filter(brain_final.astype(np.float32), sigma=1.0
 # Aplicar la máscara suave para limpiar el fondo
 weight_np = weight_np * refined_mask
 
-# CRITICAL: FANSI needs the magnitude weight normalized so its mean inside the brain ~1.
-# Normalize the magnitude to mean=1 inside the brain mask BEFORE squaring.
+# --- NORMALIZACIÓN DE MAGNITUD ---
+# Se requiere que la media dentro del cerebro sea ~1 antes de elevar al cuadrado (requerimiento FANSI).
 weight_np /= weight_np[refined_mask].mean()
 weight_np *= weight_np
-# The value alpha1=0.04 in params.mat keeps TDV in a purely linear regime. 
-# We experimentally confirmed that pushing it to the non-linear regime (alpha=10.0) 
-# causes the pre-trained BSDS400 network to over-smooth veins and create massive central artifacts.
-# This proves the network MUST be retrained for QSM.
-alpha = 0.2903 # scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] #scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0]  # FANSI regularization param (NOT used for TDV scaling)
 
-mu = 0.0245 # scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0]
+# --- PARÁMETROS DE REGULARIZACIÓN ---
+# Usamos un alpha empírico. En el pasado, ajustábamos alpha a ~0.04 para forzar 
+# a la red TDV a un régimen lineal, intentando mitigar el sobre-suavizado y los artefactos.
+# Concluimos que esto era insuficiente: el modelo TDV pre-entrenado con imágenes RGB 
+# naturales falla fundamentalmente con datos QSM, requiriendo ser reentrenado.
+alpha = 0.2903
+mu = 0.0245
 
 maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
 tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
@@ -79,11 +79,10 @@ vn.load_state_dict(checkpoint['model'])
 vn.to(device)
 vn.eval()
 
-# define the application of the VN
-# Note: TDV was trained on natural images in [0, 1] range (denoise.py divides by 255).
-# We normalize QSM data to [0, 1] before calling VNet, then de-normalize after.
-# No alpha scaling needed — alpha=0.04 from FANSI made TDV see values ~0.004
-# instead of the ~[0,1] range it was trained on.
+# --- ITERACIONES ADMM ---
+# Nota histórica: TDV se entrenó con imágenes naturales en rango [0, 1].
+# Las imágenes QSM tienen rango ~[-0.1, 0.1]. Intentamos varias estrategias de 
+# normalización y escalado, pero la discrepancia de dominios causó artefactos severos.
 
 for t in range(0, maxOuterIter):
     # update qsm
@@ -104,17 +103,14 @@ for t in range(0, maxOuterIter):
         break
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
     
-    # update z1 - Proximal step with TDV
-    # Alpha scaling: we use alpha=0.04 (from FANSI) to scale the input.
-    # Why? TDV has Student-t activations phi(s) = log(1+s^2).
-    # If we scale to [0,1], TDV operates highly non-linearly and over-smooths QSM data (blurry blobs).
-    # Scaling by 0.04 keeps inputs tiny (~0.004), shifting TDV to a linear regime
-    # where it acts as a robust Tikhonov-like learned prior without losing fine details.
+    # --- PASO PROXIMAL z1: REGULARIZADOR TDV ---
+    # Aplicamos TDV usando un escalado 'alpha'. Como se mencionó, intentamos usar alphas
+    # muy pequeños para mantener las activaciones en un régimen lineal (comportamiento tipo Tikhonov).
+    # Eventualmente concluimos que este truco no sustituye un reentrenamiento real del modelo.
     v = qsm + s1
     
-    # Build all triplet inputs for batched processing
-    # Each triplet: 3 adjacent slices as RGB channels → (3, H, W)
-    # update z1 - Proximal step with TDV
+    # Construcción de minibatches: agrupamos 3 cortes adyacentes para simular 
+    # canales RGB (3, H, W) requeridos por la arquitectura original de TDV.
     z1_accum = torch.zeros(N, dtype=torch.float32, device=device)
     z1_count = torch.zeros(N, dtype=torch.float32, device=device)
     
@@ -124,9 +120,7 @@ for t in range(0, maxOuterIter):
         for i in center_indices
     ])  # (num_triplets, 3, H, W)
     
-    # Process in mini-batches to fit GPU memory
-    # VNet stores S=10 intermediate states × 32 features per step
-    # BATCH_SIZE=158 uses ~8.5 GB VRAM, perfect for a 12+ GB GPU (like 4070 Ti)
+    # Procesamiento en minibatches para evitar Out Of Memory en la GPU.
     BATCH_SIZE = 158
     
     for b_start in range(0, len(center_indices), BATCH_SIZE):
