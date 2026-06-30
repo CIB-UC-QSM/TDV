@@ -8,92 +8,42 @@ import scipy.io
 from scipy import ndimage
 
 from ddr import model
-from ddr.utils import imshow_3d
-
-def print_stats(name, tensor):
-    if isinstance(tensor, (int, float)):
-        print(f"[DEBUG] {name:<15} | Valor: {tensor:>8.4f}")
-    elif torch.is_tensor(tensor) and tensor.numel() == 1:
-        print(f"[DEBUG] {name:<15} | Valor: {tensor.item():>8.4f}")
-    else:
-        print(f"[DEBUG] {name:<15} | Rango: {tensor.min().item():>8.4f} a {tensor.max().item():>8.4f} | Media: {tensor.mean().item():>8.4f} | Std: {tensor.std().item():>8.4f}")
-
-def process_axis(v_in, axis_perm, vn, alpha, BATCH_SIZE):
-    """
-    Applies the TDV network along a specific axis to achieve pseudo-3D regularization.
-    """
-    v_perm = v_in.permute(*axis_perm)
-    D = v_perm.shape[0]
-    
-    accum = torch.zeros_like(v_perm)
-    count = torch.zeros_like(v_perm)
-    
-    triplets = v_perm.unfold(0, 3, 1).permute(0, 3, 1, 2)
-    center_indices = list(range(1, D - 1))
-    
-    for b_start in range(0, len(center_indices), BATCH_SIZE):
-        b_end = min(b_start + BATCH_SIZE, len(center_indices))
-        batch = triplets[b_start:b_end]
-        
-        with torch.no_grad():
-            batch_alpha = batch.contiguous() * alpha
-            x_batch = vn(batch_alpha, batch_alpha)
-            
-        outputs = x_batch[-1] # (B, 3, H, W)
-        
-        for j, i in enumerate(center_indices[b_start:b_end]):
-            accum[i-1:i+2, :, :] += outputs[j] / alpha
-            count[i-1:i+2, :, :] += 1
-            
-        del batch, batch_alpha, x_batch, outputs
-        torch.cuda.empty_cache()
-            
-    inv_perm = [0, 1, 2]
-    for i, p in enumerate(axis_perm):
-        inv_perm[p] = i
-        
-    return accum.permute(*inv_perm), count.permute(*inv_perm)
-
+from ddr.utils import imshow_3d, print_stats, rmse, process_axis
 
 tic = time.time()
+
 #Load MATLAB data container
 phase_np = scipy.io.loadmat('params.mat')['phase_use'].astype(np.float32)
 kernel_np = scipy.io.loadmat('params.mat')['kernel'].astype(np.float32)
-K2_np = np.conj(kernel_np)*kernel_np
-
+K2_np = np.conj(kernel_np)*kernel_np # El kernel en params.mat YA tiene su centro en [0,0,0] / no aplicamos ifftshift
 weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
+maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
+tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
+chi_cosmos = scipy.io.loadmat('chi_cosmos.mat')['chi_cosmos'].astype(np.float32)
+cosmos_mask = chi_cosmos != 0
+mu = 0.02  # Optimizacion via grid search resulta en 0.02
+mu2 = 1.0
+#scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] # Es 0.04
+#scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0] # Es 1.0
 
-# --- MASKING PARA ESTADÍSTICAS Y SKULL-STRIPPING ---
+# --- MASKING Y SKULL-STRIPPING ---
+# Generamos máscaras del cerebro para aislarlo de ruido en el cráneo y fondo.
 brain_solid = weight_np > 0.05
 brain_solid = ndimage.binary_fill_holes(brain_solid)
-
 mean_brain = np.mean(weight_np[brain_solid])
 umbral_dinamico = 0.05 * mean_brain
 mag_threshold = weight_np > umbral_dinamico
 brain_clean = brain_solid & mag_threshold
-
 brain_closed = ndimage.binary_closing(brain_clean, structure=np.ones((3,3,3)), iterations=2)
 brain_final = ndimage.binary_fill_holes(brain_closed)
 
-refined_mask = ndimage.gaussian_filter(brain_final.astype(np.float32), sigma=1.0) > 0.5
-
-# Skull-stripping: aislar el cerebro para no converger sobre ruido del cráneo.
-weight_np = weight_np * refined_mask
-
-# --- NORMALIZACIÓN DE MAGNITUD ---
-weight_np /= weight_np[refined_mask].mean()
+refined_mask = ndimage.gaussian_filter(brain_final.astype(np.float32), sigma=1.0) > 0.5 # Mascara dura
+weight_np = weight_np * refined_mask # Skull-stripping: aislar el cerebro para no converger sobre ruido del cráneo.
+weight_np /= weight_np[refined_mask].mean() # Se requiere que la media dentro del cerebro sea ~1 antes de elevating al cuadrado.
 weight_np *= weight_np
 
-mu = 0.0245
-
-maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
-tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
-
-mu2 = 1.0
-
 N = phase_np.shape
-Wy_np = weight_np * phase_np
-
+Wy_np = weight_np * phase_np #Wy_np es simplemente W^2 * phi. La división por (W^2 + mu2) se hará en la inicialización de z2 y en el bucle.
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Convert initial data to PyTorch tensors on GPU
@@ -121,7 +71,7 @@ else:
 # Podemos usar un max_batch_size en base a la VRAM.
 max_batch_size = BATCH_SIZE
 
-## Variable initialization to allocate memory on GPU
+# Variable initialization to allocate memory on GPU
 z1 = torch.zeros(N, dtype=torch.float32, device=device)
 s1 = torch.zeros(N, dtype=torch.float32, device=device)
 qsm = torch.zeros(N, dtype=torch.float32, device=device)
@@ -145,6 +95,11 @@ vn.load_state_dict(checkpoint['model'])
 vn.to(device)
 vn.eval()
 
+# --- ITERACIONES ADMM ---
+# Nota: TDV se entrenó con imágenes RGB [0, 1]. Las imágenes QSM están en ppm [-0.1, 0.1].
+# Para evitar artefactos, escalamos dinámicamente la entrada usando alpha para engañar
+# a la red y que procese los datos QSM como si fueran contrastes naturales.
+
 for t in range(0, maxOuterIter):
     qsm_old = qsm.clone()
     
@@ -155,7 +110,13 @@ for t in range(0, maxOuterIter):
     qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
     
     if t == 0:
-        target_std = 0.3
+        # FINE TUNING: Calibración dinámica del contraste
+        # Para que la red TDV preserve venas y bordes, necesitamos que la señal
+        # supere con creces el ruido con el que fue entrenada (sigma ~0.1).
+        # Un target Std de 0.3 en el tejido garantiza una fuerte activación no-lineal,
+        # pero lo optimizamos con un grid-search a 0.1 para que el suavizado sea más sutil
+        # y no distorsione tanto la geometría.
+        target_std = 0.1
         qsm_std = torch.std(qsm[mask_torch])
         alpha = target_std / qsm_std.item()
         
@@ -166,13 +127,16 @@ for t in range(0, maxOuterIter):
     # Retomamos el cálculo original para el update (sin enmascarar)
     # para no alterar el criterio de parada original del ADMM.
     x_update = 100*torch.sqrt(torch.mean((qsm-qsm_old) ** 2))/torch.sqrt(torch.mean((qsm) ** 2))
-    print('Iter: '+str(t)+'   Update: '+str(x_update.item()))
+    #print('Iter: '+str(t)+'   Update: '+str(x_update.item())) # Descomentar para ver el print de las iteraciones
     
     if x_update < tolUpdate:
         break
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
     
     # --- PASO PROXIMAL z1: REGULARIZADOR TDV EN 3D ---
+    # Aplicamos TDV usando el escalado dinámico 'alpha'. Esto asegura que el input tenga 
+    # la desviación estándar objetivo (target_std), activando correctamente los filtros 
+    # no-lineales preservadores de bordes, sin necesidad de reentrenar la red.
     v = qsm + s1
     if t == 0:
         print_stats("v (qsm + s1)", v)
@@ -214,15 +178,10 @@ s1_np = s1.cpu().numpy()
 mdic = {"x": qsm_np, "time":(toc-tic),"iter":(t+1)}
 scipy.io.savemat('results/wTDV_QSM_torch_3d.mat', mdic)
 
-# --- EVALUACIÓN RMSE (Data Fidelity Ponderado) EN GPU ---
-# Al no tener Ground Truth de susceptibilidad, la métrica física estándar es el Data Fidelity RMSE 
-# ponderado por la magnitud (W). Lo calculamos 100% en la GPU usando los tensores de PyTorch.
-W_torch = torch.sqrt(weight)  # weight ya está elevado al cuadrado
-diff = (FhDFx - phase) * W_torch
-ref = phase * W_torch
-rmse_val_gpu = (torch.norm(diff[mask_torch]) / torch.norm(ref[mask_torch])) * 100.0
-print(f"\n--- RMSE FINAL FASE PREDICHA VS FASE REAL ---")
-print(f"[EVALUACIÓN] RMSE de Data Fidelity Ponderado (Fase predicha vs Fase real): {rmse_val_gpu.item():.2f}%")
+# --- EVALUACIÓN RMSE (Susceptibilidad) ---
+rmse_val = rmse(qsm_np, chi_cosmos, mask=cosmos_mask)
+print(f"\n--- RMSE FINAL SUSCEPTIBILIDAD ---")
+print(f"[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): {rmse_val:.2f}%")
 print(f"--------------------------------")
 
 imshow_3d(qsm_np, title="wTDV_QSM_3D (x)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='results/wTDV_QSM_torch_3d.png')
@@ -231,11 +190,32 @@ imshow_3d(z1_np, title="z1 (output of TDV 3D)", rango=(-0.1, 0.1), angles=(-90, 
 imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_s1_torch_3d.png')
 
 '''
+--- ESTADÍSTICAS INICIALES ---
+[DEBUG] mu              | Valor:   0.0200
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 9.5334
+[DEBUG] qsm (update)    | Rango:  -0.1023 a   0.1601 | Media:   0.0000 | Std:   0.0051
+[DEBUG] v (qsm + s1)    | Rango:  -0.1023 a   0.1601 | Media:   0.0000 | Std:   0.0051
+[DEBUG] z1 (TDV out 3D) | Rango:  -0.0683 a   0.1323 | Media:   0.0000 | Std:   0.0041
+[DEBUG] s1 (dual)       | Rango:  -0.0385 a   0.0375 | Media:  -0.0000 | Std:   0.0024
+--------------------------------
+
+--- RMSE FINAL SUSCEPTIBILIDAD ---
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 28.19%
+--------------------------------
+'''
+
+'''
 =============================================================================
 ADICIÓN 3D:
 Se extendió el regularizador 2D a un entorno pseudo-3D calculando el 
 prior en los tres ejes ortogonales (Axial, Coronal y Sagital) mediante 
 permutaciones del tensor y promediando las reconstrucciones.
-=============================================================================
 '''
 # %%
