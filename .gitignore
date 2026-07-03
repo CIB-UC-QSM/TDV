@@ -18,13 +18,14 @@ __pycache__/
 
 # Archivos de sistema o checkpoints grandes que no quieras subir (ej. pesos del modelo)
 *.pt
-*.pth
 *.ckpt
 .DS_Store
 
 # Excluir parametros cosmotest y otros archivos mat
 *.mat
 params.mat
+entrenamiento.log
+checkpoints
 
 # Excluir claude
 .claude/

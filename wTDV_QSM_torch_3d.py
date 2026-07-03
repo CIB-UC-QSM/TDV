@@ -58,13 +58,13 @@ mask_torch = torch.from_numpy(refined_mask).to(device)
 if device.type == 'cuda':
     total_vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
     if total_vram_gb >= 11.5:
-        BATCH_SIZE = 8
+        BATCH_SIZE = 128        # Aprovecha masivos 16GB para lanzar kernels más grandes (4x más rápido)
     elif total_vram_gb >= 6.0:
-        BATCH_SIZE = 4
+        BATCH_SIZE = 64
     else:
-        BATCH_SIZE = 2
+        BATCH_SIZE = 16
 else:
-    BATCH_SIZE = 2
+    BATCH_SIZE = 16
 
 # Si procesamos por las dimensiones X e Y, N[0] y N[1] pueden ser más grandes que N[2].
 # Aseguramos que el batch size no reviente la RAM. BATCH_SIZE es sobre el número de slices.
@@ -72,8 +72,13 @@ else:
 max_batch_size = BATCH_SIZE
 
 # Variable initialization to allocate memory on GPU
-z1 = torch.zeros(N, dtype=torch.float32, device=device)
-s1 = torch.zeros(N, dtype=torch.float32, device=device)
+zx = torch.zeros(N, dtype=torch.float32, device=device)
+sx = torch.zeros(N, dtype=torch.float32, device=device)
+zy = torch.zeros(N, dtype=torch.float32, device=device)
+sy = torch.zeros(N, dtype=torch.float32, device=device)
+zz = torch.zeros(N, dtype=torch.float32, device=device)
+sz = torch.zeros(N, dtype=torch.float32, device=device)
+
 qsm = torch.zeros(N, dtype=torch.float32, device=device)
 weight_mu2 = weight + mu2
 denominator = mu2 * K2 + mu
@@ -104,25 +109,17 @@ for t in range(0, maxOuterIter):
     qsm_old = qsm.clone()
     
     fft_z2_s2 = torch.fft.fftn(z2 - s2)
-    fft_z1_s1 = torch.fft.fftn(z1 - s1)
+    fft_zx_sx = torch.fft.fftn(zx - sx)
+    fft_zy_sy = torch.fft.fftn(zy - sy)
+    fft_zz_sz = torch.fft.fftn(zz - sz)
     
-    numerator = mu2 * kernel * fft_z2_s2 + mu * fft_z1_s1
+    numerator = mu2 * kernel * fft_z2_s2 + (mu / 3.0) * (fft_zx_sx + fft_zy_sy + fft_zz_sz)
     qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
     
     if t == 0:
-        # FINE TUNING: Calibración dinámica del contraste
-        # Para que la red TDV preserve venas y bordes, necesitamos que la señal
-        # supere con creces el ruido con el que fue entrenada (sigma ~0.1).
-        # Un target Std de 0.3 en el tejido garantiza una fuerte activación no-lineal,
-        # pero lo optimizamos con un grid-search a 0.1 para que el suavizado sea más sutil
-        # y no distorsione tanto la geometría.
         target_std = 0.1
         qsm_std = torch.std(qsm[mask_torch])
-        alpha = target_std / qsm_std.item()
-        
-        print("\n--- ESTADÍSTICAS ITERACIÓN 0 ---")
-        print(f"[FINE TUNING] Alpha calibrado matemáticamente a: {alpha:.4f}")
-        print_stats("qsm (update)", qsm)
+        alpha = target_std / qsm_std.item() if qsm_std.item() > 0 else 1.0
     
     # Retomamos el cálculo original para el update (sin enmascarar)
     # para no alterar el criterio de parada original del ADMM.
@@ -133,47 +130,52 @@ for t in range(0, maxOuterIter):
         break
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
     
-    # --- PASO PROXIMAL z1: REGULARIZADOR TDV EN 3D ---
-    # Aplicamos TDV usando el escalado dinámico 'alpha'. Esto asegura que el input tenga 
-    # la desviación estándar objetivo (target_std), activando correctamente los filtros 
-    # no-lineales preservadores de bordes, sin necesidad de reentrenar la red.
-    v = qsm + s1
-    if t == 0:
-        print_stats("v (qsm + s1)", v)
+    # --- PASO PROXIMAL: REGULARIZADOR TDV MULTI-VARIABLE ---
+    vx = qsm + sx
+    vy = qsm + sy
+    vz = qsm + sz
     
-    # Aplicar la red 2D sobre los tres planos ortogonales (Axial, Coronal, Sagital)
     # Axial (Z-axis, permute: 2, 0, 1)
-    accum_z, count_z = process_axis(v, (2, 0, 1), vn, alpha, max_batch_size)
+    zz = process_axis(vz, (2, 0, 1), vn, alpha, max_batch_size)
+    
     # Coronal (Y-axis, permute: 1, 0, 2)
-    accum_y, count_y = process_axis(v, (1, 0, 2), vn, alpha, max_batch_size)
+    zy = process_axis(vy, (1, 0, 2), vn, alpha, max_batch_size)
+    
     # Sagital (X-axis, permute: 0, 1, 2)
-    accum_x, count_x = process_axis(v, (0, 1, 2), vn, alpha, max_batch_size)
+    zx = process_axis(vx, (0, 1, 2), vn, alpha, max_batch_size)
     
-    z1_accum_total = accum_x + accum_y + accum_z
-    z1_count_total = count_x + count_y + count_z
-    
-    z1_count_total[z1_count_total == 0] = 1.0
-    z1 = z1_accum_total / z1_count_total
-    
-    s1 += qsm - z1
+    sx += qsm - zx
+    sy += qsm - zy
+    sz += qsm - zz
     
     if t == 0:
-        print_stats("z1 (TDV out 3D)", z1)
-        print_stats("s1 (dual)", s1)
+        print(f"\n--- ESTADÍSTICAS ITERACIÓN 0 ---")
+        print(f"[FINE TUNING] Alpha calibrado matemáticamente a: {alpha:.4f}")
+        print_stats("qsm (update)", qsm)
+        print_stats("zz (TDV out Z)", zz)
+        print_stats("sz (dual Z)", sz)
         print("--------------------------------\n")
         
     # update z2
     z2 = (Wy + mu2*(FhDFx+s2)) / weight_mu2
     s2 += FhDFx - z2
+    
+    # Progress Print
+    if (t + 1) % 5 == 0 or t == 0:
+        toc_iter = time.time()
+        qsm_iter_np = qsm.cpu().numpy()
+        rmse_iter = rmse(qsm_iter_np, chi_cosmos, mask=cosmos_mask)
+        print(f"Iteración {t+1:02d}/50 | Tiempo transcurrido: {toc_iter-tic:.1f}s | RMSE: {rmse_iter:.2f}%")
+
           
 toc = time.time()    
 print(f"corrido en {toc-tic} segundos")
 
 ## Save output and Convert to NIfTI / RAS convention
 qsm_np = qsm.cpu().numpy()
-v_np = v.cpu().numpy()
-z1_np = z1.cpu().numpy()
-s1_np = s1.cpu().numpy()
+vz_np = vz.cpu().numpy()
+zz_np = zz.cpu().numpy()
+sz_np = sz.cpu().numpy()
 
 mdic = {"x": qsm_np, "time":(toc-tic),"iter":(t+1)}
 scipy.io.savemat('results/wTDV_QSM_torch_3d.mat', mdic)
@@ -185,9 +187,9 @@ print(f"[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): {rmse_va
 print(f"--------------------------------")
 
 imshow_3d(qsm_np, title="wTDV_QSM_3D (x)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='results/wTDV_QSM_torch_3d.png')
-imshow_3d(v_np, title="v (input to TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_v_torch_3d.png')
-imshow_3d(z1_np, title="z1 (output of TDV 3D)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_z1_torch_3d.png')
-imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_s1_torch_3d.png')
+imshow_3d(vz_np, title="vz (input to TDV Z)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_vz_torch_3d.png')
+imshow_3d(zz_np, title="zz (output of TDV Z)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_zz_torch_3d.png')
+imshow_3d(sz_np, title="sz (dual variable Z)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_sz_torch_3d.png')
 
 '''
 --- ESTADÍSTICAS INICIALES ---

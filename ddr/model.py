@@ -12,16 +12,16 @@ class Dataterm(torch.nn.Module):
     def __init__(self, config):
         super(Dataterm, self).__init__()
 
-    def forward(self, x, *args):
+    def forward(self, x, *args, **kwargs):
         raise NotImplementedError
 
-    def energy(self):
+    def energy(self, *args, **kwargs):
         raise NotImplementedError
 
-    def prox(self, x, *args):
+    def prox(self, x, *args, **kwargs):
         raise NotImplementedError
 
-    def grad(self, x, *args):
+    def grad(self, x, *args, **kwargs):
         raise NotImplementedError
 
 
@@ -29,13 +29,13 @@ class L2DenoiseDataterm(Dataterm):
     def __init__(self, config):
         super(L2DenoiseDataterm, self).__init__(config)
 
-    def energy(self, x, z):
+    def energy(self, x, z, **kwargs):
         return 0.5*(x-z)**2
 
-    def prox(self, x, z, tau):
+    def prox(self, x, z, tau, **kwargs):
         return (x + tau * z) / (1 + tau) 
 
-    def grad(self, x, z):
+    def grad(self, x, z, **kwargs):
         return x-z
 
 class BlurDenoiseDataterm(Dataterm):
@@ -49,7 +49,7 @@ class BlurDenoiseDataterm(Dataterm):
         # Los tamaños en PyTorch para conv2d son: (out_channels, in_channels, height, width)
         self.kernel = torch.ones((1, 1, 3, 3), dtype=torch.float32).cuda() / 9.0
 
-    def grad(self, x, z):
+    def grad(self, x, z, **kwargs):
         # 2. Identificamos si la imagen viene en escala de grises (1 canal) o RGB (3 canales)
         channels = x.shape[1]
         # Repetimos el filtro para que actúe en cada canal de forma independiente
@@ -71,7 +71,7 @@ class BlurDenoiseDataterm(Dataterm):
         # con el mismo filtro equivale exactamente a aplicar el operador adjunto.
         At_residual = torch.nn.functional.conv2d(residual, weight, padding=1, groups=channels)
 
-        return At_residual
+        return At_residual.contiguous()
 
 class QSMDataterm(Dataterm):
     """
@@ -101,67 +101,48 @@ class QSMDataterm(Dataterm):
         else:
             self.W2 = None
     
-    def _forward_op(self, x):
+    def _forward_op(self, x, D):
         """Forward model A(x) = F⁻¹{D · F{x}}
         Applies dipole convolution in Fourier domain.
-        Handles (B, C, H, W) tensors from VNet."""
-        return torch.fft.ifft2(self.D * torch.fft.fft2(x)).real
+        Handles (B, C, H, W) or (B, C, Z, H, W) tensors."""
+        # Use fftn over all dimensions starting from the spatial dimensions (index 2 onwards)
+        dims = tuple(range(2, x.dim()))
+        return torch.fft.ifftn(D * torch.fft.fftn(x, dim=dims), dim=dims).real.contiguous()
     
-    def _adjoint_op(self, x):
+    def _adjoint_op(self, x, D):
         """Adjoint A^T(x). For QSM, D is real and symmetric in k-space,
         so A^T = A (self-adjoint)."""
-        return self._forward_op(x)
+        return self._forward_op(x, D)
     
-    def energy(self, x, z):
+    def energy(self, x, z, kernel=None, weight=None):
         """Per-pixel energy: ½·W²·(Ax - z)²
         Used for monitoring convergence and training loss."""
-        residual = self._forward_op(x) - z
-        if self.W2 is not None:
-            return 0.5 * self.W2 * residual ** 2
+        D = kernel.unsqueeze(1) if kernel is not None else self.D
+        residual = self._forward_op(x, D) - z
+        W2 = (weight * weight) if weight is not None else self.W2
+        if W2 is not None:
+            return 0.5 * W2 * residual ** 2
         return 0.5 * residual ** 2
     
-    def grad(self, x, z):
-        """Gradient: ∇_x [½‖W(Ax-z)‖²] = A^T · W² · (Ax - z)
-        With W=I (no weights): A^T(Ax - z) = A(Ax - z) since A^T=A."""
-        residual = self._forward_op(x) - z
-        if self.W2 is not None:
-            residual = self.W2 * residual
-        return self._adjoint_op(residual)
+    def grad(self, x, z, kernel=None, weight=None):
+        """Gradient: ∇_x [½‖W(Ax-z)‖²] = A^T · W² · (Ax - z)"""
+        D = kernel.unsqueeze(1) if kernel is not None else self.D
+        residual = self._forward_op(x, D) - z
+        W2 = (weight * weight) if weight is not None else self.W2
+        if W2 is not None:
+            residual = W2 * residual
+        return self._adjoint_op(residual, D)
     
-    def prox(self, x, z, tau):
+    def prox(self, x, z, tau, kernel=None, weight=None):
         """Proximal operator (without weights):
-        argmin_u  ½‖u - x‖² + τ · ½‖Du - z‖²
-        
-        Closed-form in Fourier:
-            U = (F{x} + τ·D·F{z}) / (1 + τ·|D|²)
-        
-        Note: with spatially-varying weights W, no closed-form exists
-        in Fourier. Use grad() with use_prox=False in that case."""
-        X_k = torch.fft.fft2(x)
-        Z_k = torch.fft.fft2(z)
-        U_k = (X_k + tau * self.D * Z_k) / (1 + tau * self.D2)
-        return torch.fft.ifft2(U_k).real
-    
-    @staticmethod
-    def project_kernel_2d(kernel_3d, method='mean'):
-        """Create a 2D dipole kernel from a 3D k-space kernel.
-        
-        Args:
-            kernel_3d: 3D dipole kernel in k-space, shape (Nx, Ny, Nz)
-            method: 'mean' for projection (integrate over kz, more robust)
-                    'central' for central kz slice (sharper but noisier)
-        Returns:
-            2D kernel in k-space, shape (Nx, Ny)
-        """
-        if method == 'mean':
-            # Projection: integrate over kz → smoother, more robust
-            return np.real(kernel_3d.mean(axis=2)).astype(np.float32)
-        elif method == 'central':
-            # Central slice: D(kx, ky, kz=0)
-            nz = kernel_3d.shape[2]
-            return np.real(kernel_3d[:, :, nz // 2]).astype(np.float32)
-        else:
-            raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'central'.")
+        argmin_u  ½‖u - x‖² + τ · ½‖Du - z‖²"""
+        D = kernel.unsqueeze(1) if kernel is not None else self.D
+        D2 = D * D
+        dims = tuple(range(2, x.dim()))
+        X_k = torch.fft.fftn(x, dim=dims)
+        Z_k = torch.fft.fftn(z, dim=dims)
+        U_k = (X_k + tau * D * Z_k) / (1 + tau * D2)
+        return torch.fft.ifftn(U_k, dim=dims).real.contiguous()
 
 class VNet(torch.nn.Module):
     """
@@ -214,7 +195,7 @@ class VNet(torch.nn.Module):
         # add a positivity constraint
         scalar.proj = lambda: scalar.data.clamp_(min, max)
 
-    def forward(self, x, z, get_grad_R=False):
+    def forward(self, x, z, kernel=None, weight=None, get_grad_R=False):
 
         x_all = x.new_empty((self.S+1,*x.shape))
         x_all[0] = x
@@ -225,14 +206,44 @@ class VNet(torch.nn.Module):
         tau = self.T / self.S
         for s in range(1,self.S+1):
             # compute a single step
-            if self.efficient and x.requires_grad:
-                grad_R = cp.checkpoint(self.R.grad, x)
+            
+            # CRITICO: Custom CUDA operators (optoth en TDV) exigen contiguidad absoluta.
+            # Asegurar que x y sus gradientes son siempre contiguos en memoria.
+            if not x.is_contiguous():
+                x = x.contiguous()
+                
+            if x.dim() == 5:
+                # 3D Volume processing (B, C, Z, H, W) -> Extract 2.5D Triplets for TDV
+                B, C, Z, H, W = x.shape
+                # Pad Z by 1 on each side
+                x_pad = torch.nn.functional.pad(x, (0, 0, 0, 0, 1, 1), mode='replicate')
+                # Unfold to triplets. unfold(2) -> (B, C, Z, H, W, 3). squeeze C -> (B, Z, H, W, 3).
+                triplets = x_pad.squeeze(1).unfold(1, 3, 1).permute(0, 1, 4, 2, 3).contiguous().view(B*Z, 3, H, W)
+                
+                if self.efficient and triplets.requires_grad:
+                    grad_triplets = cp.checkpoint(self.R.grad, triplets, use_reentrant=False)
+                else:
+                    grad_triplets = self.R.grad(triplets)
+                    
+                grad_triplets = grad_triplets.view(B, Z, 3, H, W)
+                grad_R_pad = torch.zeros_like(x_pad)
+                for i in range(3):
+                    grad_R_pad[:, 0, i:i+Z, :, :] += grad_triplets[:, :, i, :, :]
+                grad_R = grad_R_pad[:, :, 1:-1, :, :] / 3.0
             else:
-                grad_R = self.R.grad(x)
+                if self.efficient and x.requires_grad:
+                    grad_R = cp.checkpoint(self.R.grad, x, use_reentrant=False)
+                else:
+                    grad_R = self.R.grad(x)
+                
+            if not grad_R.is_contiguous():
+                grad_R = grad_R.contiguous()
+
             if self.use_prox: #se usa el operador proximal, solo para L2 default
-                x = self.D.prox(x - tau * grad_R, z, self.lmbda / self.S)
+                x = self.D.prox(x - tau * grad_R, z, self.lmbda / self.S, kernel=kernel, weight=weight)
             else: #siempre usaremos este else (desactivamos operador proximal) en los ejemplos posteriores
-                x = x - tau * grad_R - self.lmbda/self.S * self.D.grad(x, z)
+                x = x - tau * grad_R - self.lmbda/self.S * self.D.grad(x, z, kernel=kernel, weight=weight)
+            
             if get_grad_R:
                 grad_R_all[s-1] = grad_R
             x_all[s] = x

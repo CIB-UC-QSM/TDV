@@ -102,11 +102,49 @@ def process_axis(v_in, axis_perm, vn, alpha, BATCH_SIZE):
     """
     Applies the TDV network along a specific axis to achieve pseudo-3D regularization.
     """
-    v_perm = v_in.permute(*axis_perm)
+    v_perm = v_in.permute(*axis_perm).contiguous()
     D = v_perm.shape[0]
     
     accum = torch.zeros_like(v_perm)
     count = torch.zeros_like(v_perm)
+    
+    triplets = v_perm.unfold(0, 3, 1).permute(0, 3, 1, 2)
+    center_indices = list(range(1, D - 1))
+    
+    # count can be deterministically calculated once
+    count[0:D-2] += 1
+    count[1:D-1] += 1
+    count[2:D] += 1
+    
+    for b_start in range(0, len(center_indices), BATCH_SIZE):
+        b_end = min(b_start + BATCH_SIZE, len(center_indices))
+        batch = triplets[b_start:b_end]
+        
+        with torch.no_grad():
+            batch_alpha = batch.contiguous() * alpha
+            x_batch = vn(batch_alpha, batch_alpha)
+            
+        outputs = x_batch[-1] / alpha # (B, 3, H, W)
+        
+        accum[b_start:b_end] += outputs[:, 0]
+        accum[b_start+1:b_end+1] += outputs[:, 1]
+        accum[b_start+2:b_end+2] += outputs[:, 2]
+        
+    inv_perm = [0, 1, 2]
+    for i, p in enumerate(axis_perm):
+        inv_perm[p] = i
+        
+    return (accum / count).permute(*inv_perm)
+
+def process_axis_center(v_in, axis_perm, vn, alpha, BATCH_SIZE):
+    """
+    Applies the TDV network along a specific axis and extracts only the center slice
+    of the predicted triplets to prevent blurring. Faster and uses less memory.
+    """
+    v_perm = v_in.permute(*axis_perm)
+    D = v_perm.shape[0]
+    
+    accum = torch.zeros_like(v_perm)
     
     triplets = v_perm.unfold(0, 3, 1).permute(0, 3, 1, 2)
     center_indices = list(range(1, D - 1))
@@ -122,14 +160,19 @@ def process_axis(v_in, axis_perm, vn, alpha, BATCH_SIZE):
         outputs = x_batch[-1] # (B, 3, H, W)
         
         for j, i in enumerate(center_indices[b_start:b_end]):
-            accum[i-1:i+2, :, :] += outputs[j] / alpha
-            count[i-1:i+2, :, :] += 1
+            # Assign only the center slice prediction (channel 1)
+            accum[i, :, :] = outputs[j, 1, :, :] / alpha
+            
+            # Boundary patches
+            if i == 1:
+                accum[0, :, :] = outputs[j, 0, :, :] / alpha
+            if i == D - 2:
+                accum[D - 1, :, :] = outputs[j, 2, :, :] / alpha
             
         del batch, batch_alpha, x_batch, outputs
-        torch.cuda.empty_cache()
             
     inv_perm = [0, 1, 2]
     for i, p in enumerate(axis_perm):
         inv_perm[p] = i
         
-    return accum.permute(*inv_perm), count.permute(*inv_perm)
+    return accum.permute(*inv_perm)

@@ -77,7 +77,8 @@ class Conv2d(torch.nn.Module):
         # then pad
         pad = weight.shape[-1]//2
         if self.pad and pad > 0:
-            x = optoth.pad.pad2d(x.contiguous(), (pad,pad,pad,pad), mode='symmetric')
+            x_fp32 = x.float()
+            x = optoth.pad.pad2d(x_fp32.contiguous(), (pad,pad,pad,pad), mode='symmetric').to(x.dtype)
         # compute the convolution
         return torch.nn.functional.conv2d(x, weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
@@ -98,7 +99,8 @@ class Conv2d(torch.nn.Module):
         x = torch.nn.functional.conv_transpose2d(x, weight, self.bias, self.stride, self.padding, output_padding, self.groups, self.dilation)
         pad = weight.shape[-1]//2
         if self.pad and pad > 0:
-            x = optoth.pad.pad2d_transpose(x.contiguous(), (pad,pad,pad,pad), mode='symmetric')
+            x_fp32 = x.float()
+            x = optoth.pad.pad2d_transpose(x_fp32.contiguous(), (pad,pad,pad,pad), mode='symmetric').to(x.dtype)
         return x
 
     def extra_repr(self):
