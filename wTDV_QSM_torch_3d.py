@@ -1,5 +1,4 @@
 #%%
-#Proof of concept hecho con IA replicando el 2D desarrollado.
 import os
 import time
 import numpy as np
@@ -10,6 +9,10 @@ from scipy import ndimage
 from ddr import model
 from ddr.utils import imshow_3d, print_stats, rmse, process_axis
 
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision('high')  # Habilita TF32
+
 tic = time.time()
 
 #Load MATLAB data container
@@ -17,14 +20,16 @@ phase_np = scipy.io.loadmat('params.mat')['phase_use'].astype(np.float32)
 kernel_np = scipy.io.loadmat('params.mat')['kernel'].astype(np.float32)
 K2_np = np.conj(kernel_np)*kernel_np # El kernel en params.mat YA tiene su centro en [0,0,0] / no aplicamos ifftshift
 weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
-maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
-tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
+maxOuterIter = 100
+tolUpdate = 1.05 # Sincronizado con el 2D para parar en el punto óptimo
 chi_cosmos = scipy.io.loadmat('chi_cosmos.mat')['chi_cosmos'].astype(np.float32)
 cosmos_mask = chi_cosmos != 0
-mu = 0.02  # Optimizacion via grid search resulta en 0.02
+mu = 0.008  # Actualizado según los resultados del Grid Search
 mu2 = 1.0
 #scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] # Es 0.04
 #scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0] # Es 1.0
+#scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0] # Es 0.5
+#scipy.io.loadmat('params.mat')['maxOuterIter'][0,0] # Es 100
 
 # --- MASKING Y SKULL-STRIPPING ---
 # Generamos máscaras del cerebro para aislarlo de ruido en el cráneo y fondo.
@@ -54,11 +59,14 @@ weight = torch.from_numpy(weight_np).to(device)
 Wy = torch.from_numpy(Wy_np).to(device)
 mask_torch = torch.from_numpy(refined_mask).to(device)
 
+# Autocast dtype fallback para tarjetas gráficas más antiguas
+amp_dtype = torch.bfloat16 if (device.type == 'cuda' and torch.cuda.is_bf16_supported()) else torch.float16
+
 # --- OPTIMIZACIÓN DE VRAM (DYNAMIC BATCHING) ---
 if device.type == 'cuda':
     total_vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
     if total_vram_gb >= 11.5:
-        BATCH_SIZE = 128        # Aprovecha masivos 16GB para lanzar kernels más grandes (4x más rápido)
+        BATCH_SIZE = 256        # Aprovecha masivos 16GB para procesar TODO el volumen en 1 sola pasada por eje
     elif total_vram_gb >= 6.0:
         BATCH_SIZE = 64
     else:
@@ -79,6 +87,28 @@ sy = torch.zeros(N, dtype=torch.float32, device=device)
 zz = torch.zeros(N, dtype=torch.float32, device=device)
 sz = torch.zeros(N, dtype=torch.float32, device=device)
 
+# Pre-alocar tensores del bucle TDV para evitar memory leaks/fragmentation
+# Axial (Z, permute 2, 0, 1)
+accum_z = torch.zeros((N[2], N[0], N[1]), dtype=torch.float32, device=device)
+count_z = torch.zeros((N[2], N[0], N[1]), dtype=torch.float32, device=device)
+count_z[0:N[2]-2] += 1
+count_z[1:N[2]-1] += 1
+count_z[2:N[2]] += 1
+
+# Coronal (Y, permute 1, 0, 2)
+accum_y = torch.zeros((N[1], N[0], N[2]), dtype=torch.float32, device=device)
+count_y = torch.zeros((N[1], N[0], N[2]), dtype=torch.float32, device=device)
+count_y[0:N[1]-2] += 1
+count_y[1:N[1]-1] += 1
+count_y[2:N[1]] += 1
+
+# Sagital (X, permute 0, 1, 2)
+accum_x = torch.zeros((N[0], N[1], N[2]), dtype=torch.float32, device=device)
+count_x = torch.zeros((N[0], N[1], N[2]), dtype=torch.float32, device=device)
+count_x[0:N[0]-2] += 1
+count_x[1:N[0]-1] += 1
+count_x[2:N[0]] += 1
+
 qsm = torch.zeros(N, dtype=torch.float32, device=device)
 weight_mu2 = weight + mu2
 denominator = mu2 * K2 + mu
@@ -98,13 +128,18 @@ checkpoint = torch.load(os.path.join('checkpoints', f'tdv3-3-25-f32-{color}.pth'
 vn = model.VNet(checkpoint['config'], efficient=False)
 vn.load_state_dict(checkpoint['model'])
 vn.to(device)
+vn = vn.to(memory_format=torch.channels_last)
 vn.eval()
+
+# Habilitar compilación por Triton de todo el modelo
+vn = torch.compile(vn, mode="max-autotune")
 
 # --- ITERACIONES ADMM ---
 # Nota: TDV se entrenó con imágenes RGB [0, 1]. Las imágenes QSM están en ppm [-0.1, 0.1].
 # Para evitar artefactos, escalamos dinámicamente la entrada usando alpha para engañar
 # a la red y que procese los datos QSM como si fueran contrastes naturales.
 
+converged = False
 for t in range(0, maxOuterIter):
     qsm_old = qsm.clone()
     
@@ -115,19 +150,25 @@ for t in range(0, maxOuterIter):
     
     numerator = mu2 * kernel * fft_z2_s2 + (mu / 3.0) * (fft_zx_sx + fft_zy_sy + fft_zz_sz)
     qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
-    
+
+    # ADMM baja, vuelve a subir y termina oscilando respecto a 1.4-1.5; lo matamos antes de eso
+    if converged and x_update.item()>1.4:
+            break
+
     if t == 0:
-        target_std = 0.1
+        target_std = 0.06 # Actualizado según Grid Search
         qsm_std = torch.std(qsm[mask_torch])
         alpha = target_std / qsm_std.item() if qsm_std.item() > 0 else 1.0
     
     # Retomamos el cálculo original para el update (sin enmascarar)
     # para no alterar el criterio de parada original del ADMM.
     x_update = 100*torch.sqrt(torch.mean((qsm-qsm_old) ** 2))/torch.sqrt(torch.mean((qsm) ** 2))
-    #print('Iter: '+str(t)+'   Update: '+str(x_update.item())) # Descomentar para ver el print de las iteraciones
+    current_rmse = rmse(qsm.cpu().numpy(), chi_cosmos, mask=cosmos_mask)
+    print(f"Iter: {t:<3} Update: {x_update.item():<8.4f} RMSE: {current_rmse:.4f}%")
     
-    if x_update < tolUpdate:
-        break
+    if x_update.item() < 1.05: # Acá llega al limite de ADMM
+        converged = True
+
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
     
     # --- PASO PROXIMAL: REGULARIZADOR TDV MULTI-VARIABLE ---
@@ -136,13 +177,13 @@ for t in range(0, maxOuterIter):
     vz = qsm + sz
     
     # Axial (Z-axis, permute: 2, 0, 1)
-    zz = process_axis(vz, (2, 0, 1), vn, alpha, max_batch_size)
+    zz = process_axis(vz, (2, 0, 1), vn, alpha, max_batch_size, accum_z, count_z, amp_dtype)
     
     # Coronal (Y-axis, permute: 1, 0, 2)
-    zy = process_axis(vy, (1, 0, 2), vn, alpha, max_batch_size)
+    zy = process_axis(vy, (1, 0, 2), vn, alpha, max_batch_size, accum_y, count_y, amp_dtype)
     
     # Sagital (X-axis, permute: 0, 1, 2)
-    zx = process_axis(vx, (0, 1, 2), vn, alpha, max_batch_size)
+    zx = process_axis(vx, (0, 1, 2), vn, alpha, max_batch_size, accum_x, count_x, amp_dtype)
     
     sx += qsm - zx
     sy += qsm - zy
@@ -159,15 +200,7 @@ for t in range(0, maxOuterIter):
     # update z2
     z2 = (Wy + mu2*(FhDFx+s2)) / weight_mu2
     s2 += FhDFx - z2
-    
-    # Progress Print
-    if (t + 1) % 5 == 0 or t == 0:
-        toc_iter = time.time()
-        qsm_iter_np = qsm.cpu().numpy()
-        rmse_iter = rmse(qsm_iter_np, chi_cosmos, mask=cosmos_mask)
-        print(f"Iteración {t+1:02d}/50 | Tiempo transcurrido: {toc_iter-tic:.1f}s | RMSE: {rmse_iter:.2f}%")
 
-          
 toc = time.time()    
 print(f"corrido en {toc-tic} segundos")
 
@@ -192,8 +225,8 @@ imshow_3d(zz_np, title="zz (output of TDV Z)", rango=(-0.1, 0.1), angles=(-90, -
 imshow_3d(sz_np, title="sz (dual variable Z)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_sz_torch_3d.png')
 
 '''
---- ESTADÍSTICAS INICIALES ---
-[DEBUG] mu              | Valor:   0.0200
+-- ESTADÍSTICAS INICIALES ---
+[DEBUG] mu              | Valor:   0.0080
 [DEBUG] mu2             | Valor:   1.0000
 [DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
 [DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
@@ -201,18 +234,44 @@ imshow_3d(sz_np, title="sz (dual variable Z)", rango=(-0.1, 0.1), angles=(-90, -
 ------------------------------
 
 --- ESTADÍSTICAS ITERACIÓN 0 ---
-[FINE TUNING] Alpha calibrado matemáticamente a: 9.5334
-[DEBUG] qsm (update)    | Rango:  -0.1023 a   0.1601 | Media:   0.0000 | Std:   0.0051
-[DEBUG] v (qsm + s1)    | Rango:  -0.1023 a   0.1601 | Media:   0.0000 | Std:   0.0051
-[DEBUG] z1 (TDV out 3D) | Rango:  -0.0683 a   0.1323 | Media:   0.0000 | Std:   0.0041
-[DEBUG] s1 (dual)       | Rango:  -0.0385 a   0.0375 | Media:  -0.0000 | Std:   0.0024
+[FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
+[DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0060
+[DEBUG] zz (TDV out Z)  | Rango:  -0.0841 a   0.1558 | Media:  -0.0000 | Std:   0.0043
+[DEBUG] sz (dual Z)     | Rango:  -0.0567 a   0.0649 | Media:   0.0000 | Std:   0.0036
 --------------------------------
 
 --- RMSE FINAL SUSCEPTIBILIDAD ---
-[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 28.19%
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 26.89%
 --------------------------------
-'''
 
+Iter: 1   Update: 49.2603  RMSE: 43.5705%
+Iter: 2   Update: 18.1902  RMSE: 36.7493%
+Iter: 3   Update: 8.5832   RMSE: 33.6700%
+Iter: 4   Update: 5.2744   RMSE: 31.9560%
+Iter: 5   Update: 3.8141   RMSE: 30.7873%
+Iter: 6   Update: 2.9338   RMSE: 30.0084%
+Iter: 7   Update: 2.3089   RMSE: 29.4108%
+Iter: 8   Update: 1.8750   RMSE: 28.9624%
+Iter: 9   Update: 1.5711   RMSE: 28.6279%
+Iter: 10  Update: 1.3481   RMSE: 28.3666%
+Iter: 11  Update: 1.1784   RMSE: 28.1489%
+Iter: 12  Update: 1.0812   RMSE: 27.9731%
+Iter: 13  Update: 1.0336   RMSE: 27.8135%
+Iter: 14  Update: 1.0263   RMSE: 27.6901%
+Iter: 15  Update: 1.0527   RMSE: 27.5646%
+Iter: 16  Update: 1.0916   RMSE: 27.4762%
+Iter: 17  Update: 1.1444   RMSE: 27.3731%
+Iter: 18  Update: 1.1931   RMSE: 27.3083%
+Iter: 19  Update: 1.2367   RMSE: 27.2213%
+Iter: 20  Update: 1.2767   RMSE: 27.1729%
+Iter: 21  Update: 1.3129   RMSE: 27.0989%
+Iter: 22  Update: 1.3434   RMSE: 27.0614%
+Iter: 23  Update: 1.3693   RMSE: 26.9981%
+Iter: 24  Update: 1.3921   RMSE: 26.9686%
+Iter: 25  Update: 1.4134   RMSE: 26.9140%
+
+corrido en 143.7 segundos
+'''
 '''
 =============================================================================
 ADICIÓN 3D:

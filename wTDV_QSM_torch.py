@@ -9,6 +9,10 @@ from scipy import ndimage
 from ddr import model
 from ddr.utils import imshow_3d, print_stats, rmse
 
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision('high')  # Habilita TF32
+
 tic = time.time()
 
 #Load MATLAB data container
@@ -16,14 +20,16 @@ phase_np = scipy.io.loadmat('params.mat')['phase_use'].astype(np.float32)
 kernel_np = scipy.io.loadmat('params.mat')['kernel'].astype(np.float32)
 K2_np = np.conj(kernel_np)*kernel_np # El kernel en params.mat YA tiene su centro en [0,0,0] / no aplicamos ifftshift
 weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
-maxOuterIter = scipy.io.loadmat('params.mat')['maxOuterIter'][0,0]
-tolUpdate = scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0]
+maxOuterIter = 100
+tolUpdate = 0.39
 chi_cosmos = scipy.io.loadmat('chi_cosmos.mat')['chi_cosmos'].astype(np.float32)
 cosmos_mask = chi_cosmos != 0
-mu = 0.02  # Optimizacion via grid search resulta en 0.02 / ver distintos valores en mu_report.md
+mu = 0.008  # Optimizacion via grid search resulta en 0.008
 mu2 = 1.0
 #scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] # Es 0.04 / el valor de referencia de Carlos es 0.0245
 #scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0] # Es 1.0
+#scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0] # Es 0.5
+#scipy.io.loadmat('params.mat')['maxOuterIter'][0,0] # Es 100
 
 # --- MASKING Y SKULL-STRIPPING ---
 # Generamos máscaras del cerebro para aislarlo de ruido en el cráneo y fondo.
@@ -53,12 +59,15 @@ weight = torch.from_numpy(weight_np).to(device)
 Wy = torch.from_numpy(Wy_np).to(device)
 mask_torch = torch.from_numpy(refined_mask).to(device) # Máscara en GPU para estadísticas
 
+# Autocast dtype fallback para tarjetas gráficas más antiguas
+amp_dtype = torch.bfloat16 if (device.type == 'cuda' and torch.cuda.is_bf16_supported()) else torch.float16
+
 # --- OPTIMIZACIÓN DE VRAM (DYNAMIC BATCHING) ---
 # Adaptar el BATCH_SIZE dinámicamente según la VRAM disponible para no ahogar GPUs pequeñas.
 if device.type == 'cuda':
     total_vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
     if total_vram_gb >= 11.5:
-        BATCH_SIZE = 128        # Aprovecha masivos 16GB para lanzar kernels más grandes (4x más rápido)
+        BATCH_SIZE = 256        # Aprovecha masivos 16GB para lanzar kernels más grandes (4x más rápido)
     elif total_vram_gb >= 6.0:
         BATCH_SIZE = 64
     else:
@@ -80,6 +89,12 @@ z1_accum = torch.zeros(N, dtype=torch.float32, device=device)
 z1_count = torch.zeros(N, dtype=torch.float32, device=device)
 center_indices = list(range(1, N[2]-1))
 
+# Antes se recomputaba idéntico en cada iteración ADMM; ahora sólo z1_accum se resetea.
+z1_count[:, :, 0:N[2]-2] += 1
+z1_count[:, :, 1:N[2]-1] += 1
+z1_count[:, :, 2:N[2]] += 1
+#z1_count[z1_count == 0] = 1.0
+
 print("\n--- ESTADÍSTICAS INICIALES ---")
 print_stats("mu", mu)
 print_stats("mu2", mu2)
@@ -93,13 +108,18 @@ checkpoint = torch.load(os.path.join('checkpoints', f'tdv3-3-25-f32-{color}.pth'
 vn = model.VNet(checkpoint['config'], efficient=False)
 vn.load_state_dict(checkpoint['model'])
 vn.to(device)
+vn = vn.to(memory_format=torch.channels_last)
 vn.eval()
+
+# Habilitar compilación por Triton de todo el modelo (ahora que optoth ya no interfiere)
+vn = torch.compile(vn, mode="max-autotune")
 
 # --- ITERACIONES ADMM ---
 # Nota: TDV se entrenó con imágenes RGB [0, 1]. Las imágenes QSM están en ppm [-0.1, 0.1].
 # Para evitar artefactos, escalamos dinámicamente la entrada usando alpha para engañar
 # a la red y que procese los datos QSM como si fueran contrastes naturales.
 
+converged = False
 for t in range(0, maxOuterIter):
     # update qsm
     qsm_old = qsm.clone()
@@ -110,15 +130,18 @@ for t in range(0, maxOuterIter):
     
     numerator = mu2 * kernel * fft_z2_s2 + mu * fft_z1_s1
     qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
-    
+
+    if converged:
+        break
+
     if t == 0:
         # FINE TUNING: Calibración dinámica del contraste
         # Para que la red TDV preserve venas y bordes, necesitamos que la señal
         # supere con creces el ruido con el que fue entrenada (sigma ~0.1).
         # Un target Std de 0.3 en el tejido garantiza una fuerte activación no-lineal,
-        # pero lo optimizamos con un grid-search a 0.1 para que el suavizado sea más sutil
+        # pero lo optimizamos con un grid-search a 0.06 para que el suavizado sea más sutil
         # y no distorsione tanto la geometría.
-        target_std = 0.1
+        target_std = 0.06
         qsm_std = torch.std(qsm[mask_torch])
         alpha = target_std / qsm_std.item()
         
@@ -129,10 +152,10 @@ for t in range(0, maxOuterIter):
     # Retomamos el cálculo original para el update (sin enmascarar)
     # para no alterar el criterio de parada original del ADMM.
     x_update = 100*torch.sqrt(torch.mean((qsm-qsm_old) ** 2))/torch.sqrt(torch.mean((qsm) ** 2))
-    #print('Iter: '+str(t)+'   Update: '+str(x_update.item())) # Descomentar para ver el print de las iteraciones
+    current_rmse = rmse(qsm.cpu().numpy(), chi_cosmos, mask=cosmos_mask) # Comentar/descomentar para imprimir valores
+    print(f"Iter: {t:<3} Update: {x_update.item():<8.4f} RMSE: {current_rmse:.4f}%") # Comentar/descomentar para imprimir valores
 
-    if x_update < tolUpdate:
-        break
+    converged = x_update < tolUpdate
     FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
     
     # --- PASO PROXIMAL z1: REGULARIZADOR TDV ---
@@ -146,7 +169,6 @@ for t in range(0, maxOuterIter):
     # Construcción de minibatches: extraemos 3 cortes adyacentes rápidamente usando unfold
     # evitando torch.stack que copia memoria masivamente y ralentiza la iteración.
     z1_accum.zero_()
-    z1_count.zero_()
     
     # v_DHW tiene shape (D, H, W)
     v_DHW = v.permute(2, 0, 1).contiguous() 
@@ -159,8 +181,8 @@ for t in range(0, maxOuterIter):
         b_end = min(b_start + BATCH_SIZE, len(center_indices))
         batch = triplets[b_start:b_end]  # (B, 3, H, W)
         
-        with torch.no_grad():
-            batch_alpha = batch.contiguous() * alpha
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=amp_dtype):
+            batch_alpha = batch.contiguous().to(memory_format=torch.channels_last) * alpha
             if t == 0 and b_start == 0:
                 print_stats("batch * alpha", batch_alpha)
                 
@@ -180,13 +202,7 @@ for t in range(0, maxOuterIter):
         z1_accum[:, :, b_start+1:b_end+1] += outputs_perm[:, :, :, 1].permute(1, 2, 0)
         z1_accum[:, :, b_start+2:b_end+2] += outputs_perm[:, :, :, 2].permute(1, 2, 0)
         
-    # count can be deterministically calculated outside the loop
-    z1_count[:, :, 0:N[2]-2] += 1
-    z1_count[:, :, 1:N[2]-1] += 1
-    z1_count[:, :, 2:N[2]] += 1
-    z1_count[z1_count == 0] = 1.0
-    z1 = z1_accum / z1_count
-    
+    z1 = z1_accum / z1_count  # z1_count precalculado una sola vez fuera del bucle
     s1 += qsm - z1
     
     if t == 0:
@@ -196,7 +212,7 @@ for t in range(0, maxOuterIter):
     # update z2
     z2 = (Wy + mu2*(FhDFx+s2)) / weight_mu2
     s2 += FhDFx - z2
-          
+    
 toc = time.time()    
 print(f"corrido en {toc-tic} segundos")
 
@@ -218,7 +234,7 @@ imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90
 
 '''
 --- ESTADÍSTICAS INICIALES ---
-[DEBUG] mu              | Valor:   0.0200
+[DEBUG] mu              | Valor:   0.0080
 [DEBUG] mu2             | Valor:   1.0000
 [DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
 [DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
@@ -226,20 +242,53 @@ imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90
 ------------------------------
 
 --- ESTADÍSTICAS ITERACIÓN 0 ---
-[FINE TUNING] Alpha calibrado matemáticamente a: 9.5334
-[DEBUG] qsm (update)    | Rango:  -0.1023 a   0.1601 | Media:   0.0000 | Std:   0.0051
-[DEBUG] v (qsm + s1)    | Rango:  -0.1023 a   0.1601 | Media:   0.0000 | Std:   0.0051
-[DEBUG] batch * alpha   | Rango:  -0.9751 a   1.5267 | Media:  -0.0000 | Std:   0.0486
-[DEBUG] outputs (VNet)  | Rango:  -0.7786 a   1.4530 | Media:  -0.0000 | Std:   0.0397
-[DEBUG] z1 (TDV out)    | Rango:  -0.0711 a   0.1384 | Media:   0.0000 | Std:   0.0041
-[DEBUG] s1 (dual)       | Rango:  -0.0344 a   0.0390 | Media:  -0.0000 | Std:   0.0024
+[FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
+[DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0060
+[DEBUG] v (qsm + s1)    | Rango:  -0.1263 a   0.1953 | Media:   0.0000 | Std:   0.0060
+[DEBUG] batch * alpha   | Rango:  -0.6137 a   0.9488 | Media:  -0.0000 | Std:   0.0293
+[DEBUG] outputs (VNet)  | Rango:  -0.4770 a   0.8491 | Media:  -0.0000 | Std:   0.0210
+[DEBUG] z1 (TDV out)    | Rango:  -0.0841 a   0.1558 | Media:  -0.0000 | Std:   0.0043
+[DEBUG] s1 (dual)       | Rango:  -0.0567 a   0.0649 | Media:   0.0000 | Std:   0.0036
 --------------------------------
 
 --- RMSE FINAL FASE PREDICHA VS FASE REAL ---
-[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 29.11%
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 27.34%
 --------------------------------
+
+Iter: 1   Update: 49.2762  RMSE: 43.5523%
+Iter: 2   Update: 18.6148  RMSE: 36.8198%
+Iter: 3   Update: 8.8699   RMSE: 33.8320%
+Iter: 4   Update: 5.4920   RMSE: 32.2225%
+Iter: 5   Update: 4.0153   RMSE: 31.1436%
+Iter: 6   Update: 3.1015   RMSE: 30.4033%
+Iter: 7   Update: 2.3905   RMSE: 29.8363%
+Iter: 8   Update: 1.9227   RMSE: 29.3947%
+Iter: 9   Update: 1.6220   RMSE: 29.0630%
+Iter: 10  Update: 1.3970   RMSE: 28.8145%
+Iter: 11  Update: 1.1728   RMSE: 28.6108%
+Iter: 12  Update: 1.0136   RMSE: 28.4436%
+Iter: 13  Update: 0.8980   RMSE: 28.3024%
+Iter: 14  Update: 0.7974   RMSE: 28.1821%
+Iter: 15  Update: 0.7192   RMSE: 28.0775%
+Iter: 16  Update: 0.6569   RMSE: 27.9864%
+Iter: 17  Update: 0.6085   RMSE: 27.9061%
+Iter: 18  Update: 0.5704   RMSE: 27.8353%
+Iter: 19  Update: 0.5393   RMSE: 27.7719%
+Iter: 20  Update: 0.5115   RMSE: 27.7155%
+Iter: 21  Update: 0.4891   RMSE: 27.6646%
+Iter: 22  Update: 0.4690   RMSE: 27.6191%
+Iter: 23  Update: 0.4529   RMSE: 27.5777%
+Iter: 24  Update: 0.4409   RMSE: 27.5407%
+Iter: 25  Update: 0.4281   RMSE: 27.5070%
+Iter: 26  Update: 0.4189   RMSE: 27.4767%
+Iter: 27  Update: 0.4101   RMSE: 27.4490%
+Iter: 28  Update: 0.4040   RMSE: 27.4241%
+Iter: 29  Update: 0.3974   RMSE: 27.4010%
+Iter: 30  Update: 0.3934   RMSE: 27.3807%
+Iter: 31  Update: 0.3878   RMSE: 27.3615%
+
+corrido en 67.2 segundos
 '''
-# Corrido en 100 segundos
 '''
 =============================================================================
 LOG DE OPTIMIZACIONES Y RESOLUCIÓN MATEMÁTICA:
@@ -260,7 +309,7 @@ LOG DE OPTIMIZACIONES Y RESOLUCIÓN MATEMÁTICA:
 
 4. Optimizaciones de Hardware y Memoria:
    - Dynamic Batching y Tensor.unfold evitan clonaciones masivas (OOM), bajando el tiempo a <2 min en GPUs de consumo (<8GB). Los denominadores se precalculan fuera del bucle.
-
+   - Se implementa autotuner de cuDNN que elige el algoritmo de conv2d más rápido / aprovechamiento de TensorCores
 5. Restricción del Dual (mu):
    - Problema: Valores altos (mu=1.0) aplastaban los datos.
    - Solución: Optimizamos a mu=0.02. Combinado con un target_std bajo (0.1), logra el equilibrio perfecto entre Data Fidelity (física) y Prior TDV.

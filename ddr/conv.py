@@ -1,8 +1,46 @@
 
 import torch
-import optoth.pad
-
 import numpy as np
+
+def symmetric_pad2d(x, pad):
+    pad_l, pad_r, pad_t, pad_b = pad
+    if pad_t > 0:
+        top = x[..., :pad_t, :].flip(-2)
+        x = torch.cat([top, x], dim=-2)
+    if pad_b > 0:
+        bottom = x[..., -pad_b:, :].flip(-2)
+        x = torch.cat([x, bottom], dim=-2)
+    if pad_l > 0:
+        left = x[..., :, :pad_l].flip(-1)
+        x = torch.cat([left, x], dim=-1)
+    if pad_r > 0:
+        right = x[..., :, -pad_r:].flip(-1)
+        x = torch.cat([x, right], dim=-1)
+    return x
+
+def symmetric_pad2d_transpose(x, pad):
+    pad_l, pad_r, pad_t, pad_b = pad
+    if pad_r > 0:
+        right = x[..., :, -pad_r:].flip(-1)
+        x = x[..., :, :-pad_r]
+        x = x.clone() # evitar inplace operations
+        x[..., :, -pad_r:] += right
+    if pad_l > 0:
+        left = x[..., :, :pad_l].flip(-1)
+        x = x[..., :, pad_l:]
+        x = x.clone()
+        x[..., :, :pad_l] += left
+    if pad_b > 0:
+        bottom = x[..., -pad_b:, :].flip(-2)
+        x = x[..., :-pad_b, :]
+        x = x.clone()
+        x[..., -pad_b:, :] += bottom
+    if pad_t > 0:
+        top = x[..., :pad_t, :].flip(-2)
+        x = x[..., pad_t:, :]
+        x = x.clone()
+        x[..., :pad_t, :] += top
+    return x
 
 __all__ = ['Conv2d', 'ConvScale2d', 'ConvScaleTranspose2d']
 
@@ -77,8 +115,7 @@ class Conv2d(torch.nn.Module):
         # then pad
         pad = weight.shape[-1]//2
         if self.pad and pad > 0:
-            x_fp32 = x.float()
-            x = optoth.pad.pad2d(x_fp32.contiguous(), (pad,pad,pad,pad), mode='symmetric').to(x.dtype)
+            x = symmetric_pad2d(x.contiguous(), (pad,pad,pad,pad))
         # compute the convolution
         return torch.nn.functional.conv2d(x, weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
@@ -99,8 +136,7 @@ class Conv2d(torch.nn.Module):
         x = torch.nn.functional.conv_transpose2d(x, weight, self.bias, self.stride, self.padding, output_padding, self.groups, self.dilation)
         pad = weight.shape[-1]//2
         if self.pad and pad > 0:
-            x_fp32 = x.float()
-            x = optoth.pad.pad2d_transpose(x_fp32.contiguous(), (pad,pad,pad,pad), mode='symmetric').to(x.dtype)
+            x = symmetric_pad2d_transpose(x.contiguous(), (pad,pad,pad,pad))
         return x
 
     def extra_repr(self):

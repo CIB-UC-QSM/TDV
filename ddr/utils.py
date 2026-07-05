@@ -98,30 +98,24 @@ def rmse(
     rmse_val = np.linalg.norm(pred[mask] - gt[mask]) / np.linalg.norm(gt[mask])
     return 100 * rmse_val
 
-def process_axis(v_in, axis_perm, vn, alpha, BATCH_SIZE):
+def process_axis(v_in, axis_perm, vn, alpha, BATCH_SIZE, accum, count, amp_dtype):
     """
     Applies the TDV network along a specific axis to achieve pseudo-3D regularization.
+    Uses pre-allocated accum and count tensors to avoid memory fragmentation.
     """
+    accum.zero_()
     v_perm = v_in.permute(*axis_perm).contiguous()
     D = v_perm.shape[0]
     
-    accum = torch.zeros_like(v_perm)
-    count = torch.zeros_like(v_perm)
-    
     triplets = v_perm.unfold(0, 3, 1).permute(0, 3, 1, 2)
-    center_indices = list(range(1, D - 1))
-    
-    # count can be deterministically calculated once
-    count[0:D-2] += 1
-    count[1:D-1] += 1
-    count[2:D] += 1
+    center_indices = range(1, D - 1)
     
     for b_start in range(0, len(center_indices), BATCH_SIZE):
         b_end = min(b_start + BATCH_SIZE, len(center_indices))
         batch = triplets[b_start:b_end]
         
-        with torch.no_grad():
-            batch_alpha = batch.contiguous() * alpha
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=amp_dtype):
+            batch_alpha = batch.contiguous().to(memory_format=torch.channels_last) * alpha
             x_batch = vn(batch_alpha, batch_alpha)
             
         outputs = x_batch[-1] / alpha # (B, 3, H, W)
