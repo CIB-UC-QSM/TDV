@@ -1,0 +1,58 @@
+
+--- ESTADÍSTICAS INICIALES ---
+Modelo de 3 canal(es): tdv3-3-25-f32-color.pth
+[DEBUG] mu              | Valor:   0.0080
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
+[DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0060
+Iter: 0   Update: 100.0000 RMSE: 65.8201%
+[DEBUG] v (qsm + s1)    | Rango:  -0.1263 a   0.1953 | Media:   0.0000 | Std:   0.0060
+[DEBUG] batch * alpha   | Rango:  -0.6137 a   0.9488 | Media:  -0.0000 | Std:   0.0293
+[DEBUG] outputs (VNet)  | Rango:  -0.4776 a   0.8494 | Media:  -0.0000 | Std:   0.0210
+[DEBUG] z1 (TDV out)    | Rango:  -0.0841 a   0.1558 | Media:  -0.0000 | Std:   0.0043
+[DEBUG] s1 (dual)       | Rango:  -0.0567 a   0.0649 | Media:   0.0000 | Std:   0.0036
+--------------------------------
+
+Iter: 1   Update: 49.3139  RMSE: 43.5523%
+Iter: 2   Update: 17.0995  RMSE: 36.8198%
+Iter: 3   Update: 7.8120   RMSE: 33.8320%
+Iter: 4   Update: 4.7036   RMSE: 32.2225%
+Iter: 5   Update: 3.4522   RMSE: 31.1436%
+Iter: 6   Update: 2.6610   RMSE: 30.4033%
+Iter: 7   Update: 2.0051   RMSE: 29.8363%
+Iter: 8   Update: 1.5858   RMSE: 29.3947%
+Iter: 9   Update: 1.3298   RMSE: 29.0630%
+Iter: 10  Update: 1.1397   RMSE: 28.8145%
+Iter: 11  Update: 0.9316   RMSE: 28.6108%
+Iter: 12  Update: 0.7920   RMSE: 28.4436%
+Iter: 13  Update: 0.6950   RMSE: 28.3024%
+Iter: 14  Update: 0.6072   RMSE: 28.1821%
+Iter: 15  Update: 0.5428   RMSE: 28.0775%
+Iter: 16  Update: 0.4925   RMSE: 27.9864%
+Iter: 17  Update: 0.4555   RMSE: 27.9061%
+Iter: 18  Update: 0.4255   RMSE: 27.8353%
+Iter: 19  Update: 0.4044   RMSE: 27.7719%
+Iter: 20  Update: 0.3856   RMSE: 27.7155%
+Iter: 21  Update: 0.3724   RMSE: 27.6646%
+Iter: 22  Update: 0.3593   RMSE: 27.6191%
+Iter: 23  Update: 0.3499   RMSE: 27.5777%
+Iter: 24  Update: 0.3411   RMSE: 27.5407%
+Iter: 25  Update: 0.3342   RMSE: 27.5070%
+Iter: 26  Update: 0.3295   RMSE: 27.4767%
+Iter: 27  Update: 0.3245   RMSE: 27.4490%
+Iter: 28  Update: 0.3217   RMSE: 27.4241%
+Iter: 29  Update: 0.3174   RMSE: 27.4010%
+corrido en 63.2084014415741 segundos
+
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 27.38%
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_QSM_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_v_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_z1_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_s1_torch.png

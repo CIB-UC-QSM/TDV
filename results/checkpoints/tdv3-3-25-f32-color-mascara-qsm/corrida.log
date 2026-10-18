@@ -1,0 +1,128 @@
+
+--- ESTADÍSTICAS INICIALES ---
+Modelo de 3 canal(es): tdv3-3-25-f32-color.pth
+[DEBUG] mu              | Valor:   0.0080
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
+[DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0059
+Iter: 0   Update: 100.0000 RMSE: 65.8240%
+[DEBUG] v (qsm + s1)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0059
+[DEBUG] batch * alpha   | Rango:  -0.6137 a   0.9488 | Media:  -0.0000 | Std:   0.0289
+[DEBUG] outputs (VNet)  | Rango:  -0.4768 a   0.8491 | Media:  -0.0000 | Std:   0.0208
+[DEBUG] z1 (TDV out)    | Rango:  -0.0841 a   0.1558 | Media:  -0.0000 | Std:   0.0042
+[DEBUG] s1 (dual)       | Rango:  -0.0567 a   0.0647 | Media:   0.0000 | Std:   0.0035
+--------------------------------
+
+Iter: 1   Update: 49.4462  RMSE: 43.3952%
+Iter: 2   Update: 17.1538  RMSE: 36.4768%
+Iter: 3   Update: 8.0918   RMSE: 33.2762%
+Iter: 4   Update: 4.9726   RMSE: 31.5593%
+Iter: 5   Update: 3.6232   RMSE: 30.4274%
+Iter: 6   Update: 2.7997   RMSE: 29.6684%
+Iter: 7   Update: 2.1269   RMSE: 29.1066%
+Iter: 8   Update: 1.6921   RMSE: 28.6855%
+Iter: 9   Update: 1.4154   RMSE: 28.3879%
+Iter: 10  Update: 1.2043   RMSE: 28.1811%
+Iter: 11  Update: 0.9859   RMSE: 28.0225%
+Iter: 12  Update: 0.8356   RMSE: 27.9033%
+Iter: 13  Update: 0.7325   RMSE: 27.8113%
+Iter: 14  Update: 0.6390   RMSE: 27.7398%
+Iter: 15  Update: 0.5765   RMSE: 27.6836%
+Iter: 16  Update: 0.5269   RMSE: 27.6400%
+Iter: 17  Update: 0.4945   RMSE: 27.6059%
+Iter: 18  Update: 0.4662   RMSE: 27.5793%
+Iter: 19  Update: 0.4531   RMSE: 27.5583%
+Iter: 20  Update: 0.4381   RMSE: 27.5429%
+Iter: 21  Update: 0.4366   RMSE: 27.5303%
+Iter: 22  Update: 0.4281   RMSE: 27.5212%
+Iter: 23  Update: 0.4340   RMSE: 27.5139%
+Iter: 24  Update: 0.4336   RMSE: 27.5090%
+Iter: 25  Update: 0.4469   RMSE: 27.5054%
+Iter: 26  Update: 0.4537   RMSE: 27.5028%
+Iter: 27  Update: 0.4699   RMSE: 27.5021%
+Iter: 28  Update: 0.4764   RMSE: 27.5008%
+Iter: 29  Update: 0.4898   RMSE: 27.5018%
+Iter: 30  Update: 0.4947   RMSE: 27.5018%
+Iter: 31  Update: 0.5066   RMSE: 27.5036%
+Iter: 32  Update: 0.5098   RMSE: 27.5043%
+Iter: 33  Update: 0.5199   RMSE: 27.5070%
+Iter: 34  Update: 0.5239   RMSE: 27.5080%
+Iter: 35  Update: 0.5334   RMSE: 27.5110%
+Iter: 36  Update: 0.5373   RMSE: 27.5127%
+Iter: 37  Update: 0.5463   RMSE: 27.5160%
+Iter: 38  Update: 0.5515   RMSE: 27.5175%
+Iter: 39  Update: 0.5599   RMSE: 27.5210%
+Iter: 40  Update: 0.5636   RMSE: 27.5228%
+Iter: 41  Update: 0.5708   RMSE: 27.5264%
+Iter: 42  Update: 0.5737   RMSE: 27.5281%
+Iter: 43  Update: 0.5786   RMSE: 27.5318%
+Iter: 44  Update: 0.5807   RMSE: 27.5335%
+Iter: 45  Update: 0.5850   RMSE: 27.5373%
+Iter: 46  Update: 0.5863   RMSE: 27.5391%
+Iter: 47  Update: 0.5900   RMSE: 27.5427%
+Iter: 48  Update: 0.5916   RMSE: 27.5445%
+Iter: 49  Update: 0.5941   RMSE: 27.5478%
+Iter: 50  Update: 0.5948   RMSE: 27.5496%
+Iter: 51  Update: 0.5971   RMSE: 27.5530%
+Iter: 52  Update: 0.5971   RMSE: 27.5546%
+Iter: 53  Update: 0.5992   RMSE: 27.5580%
+Iter: 54  Update: 0.5999   RMSE: 27.5594%
+Iter: 55  Update: 0.6014   RMSE: 27.5627%
+Iter: 56  Update: 0.6015   RMSE: 27.5641%
+Iter: 57  Update: 0.6037   RMSE: 27.5670%
+Iter: 58  Update: 0.6043   RMSE: 27.5683%
+Iter: 59  Update: 0.6056   RMSE: 27.5713%
+Iter: 60  Update: 0.6056   RMSE: 27.5725%
+Iter: 61  Update: 0.6065   RMSE: 27.5752%
+Iter: 62  Update: 0.6063   RMSE: 27.5764%
+Iter: 63  Update: 0.6076   RMSE: 27.5790%
+Iter: 64  Update: 0.6085   RMSE: 27.5797%
+Iter: 65  Update: 0.6102   RMSE: 27.5823%
+Iter: 66  Update: 0.6108   RMSE: 27.5832%
+Iter: 67  Update: 0.6118   RMSE: 27.5857%
+Iter: 68  Update: 0.6121   RMSE: 27.5864%
+Iter: 69  Update: 0.6129   RMSE: 27.5888%
+Iter: 70  Update: 0.6133   RMSE: 27.5896%
+Iter: 71  Update: 0.6144   RMSE: 27.5918%
+Iter: 72  Update: 0.6144   RMSE: 27.5923%
+Iter: 73  Update: 0.6152   RMSE: 27.5945%
+Iter: 74  Update: 0.6156   RMSE: 27.5950%
+Iter: 75  Update: 0.6163   RMSE: 27.5972%
+Iter: 76  Update: 0.6165   RMSE: 27.5976%
+Iter: 77  Update: 0.6173   RMSE: 27.5997%
+Iter: 78  Update: 0.6172   RMSE: 27.6002%
+Iter: 79  Update: 0.6179   RMSE: 27.6021%
+Iter: 80  Update: 0.6179   RMSE: 27.6024%
+Iter: 81  Update: 0.6191   RMSE: 27.6043%
+Iter: 82  Update: 0.6197   RMSE: 27.6046%
+Iter: 83  Update: 0.6203   RMSE: 27.6066%
+Iter: 84  Update: 0.6201   RMSE: 27.6067%
+Iter: 85  Update: 0.6200   RMSE: 27.6086%
+Iter: 86  Update: 0.6199   RMSE: 27.6087%
+Iter: 87  Update: 0.6207   RMSE: 27.6105%
+Iter: 88  Update: 0.6210   RMSE: 27.6105%
+Iter: 89  Update: 0.6212   RMSE: 27.6123%
+Iter: 90  Update: 0.6210   RMSE: 27.6124%
+Iter: 91  Update: 0.6216   RMSE: 27.6139%
+Iter: 92  Update: 0.6221   RMSE: 27.6141%
+Iter: 93  Update: 0.6227   RMSE: 27.6157%
+Iter: 94  Update: 0.6228   RMSE: 27.6157%
+Iter: 95  Update: 0.6236   RMSE: 27.6171%
+Iter: 96  Update: 0.6238   RMSE: 27.6171%
+Iter: 97  Update: 0.6241   RMSE: 27.6187%
+Iter: 98  Update: 0.6247   RMSE: 27.6185%
+Iter: 99  Update: 0.6259   RMSE: 27.6202%
+corrido en 187.91211652755737 segundos
+
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 27.62%
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-mascara-qsm/wTDV_QSM_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-mascara-qsm/wTDV_v_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-mascara-qsm/wTDV_z1_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-mascara-qsm/wTDV_s1_torch.png

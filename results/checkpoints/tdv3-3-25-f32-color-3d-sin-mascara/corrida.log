@@ -1,0 +1,52 @@
+
+--- ESTADÍSTICAS INICIALES ---
+[DEBUG] mu              | Valor:   0.0080
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+Iter: 0   Update: 100.0000 RMSE: 65.8201%
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
+[DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0060
+[DEBUG] zz (TDV out Z)  | Rango:  -0.0841 a   0.1558 | Media:  -0.0000 | Std:   0.0043
+[DEBUG] sz (dual Z)     | Rango:  -0.0567 a   0.0649 | Media:   0.0000 | Std:   0.0036
+--------------------------------
+
+Iter: 1   Update: 49.2603  RMSE: 43.5705%
+Iter: 2   Update: 18.1902  RMSE: 36.7493%
+Iter: 3   Update: 8.5832   RMSE: 33.6700%
+Iter: 4   Update: 5.2744   RMSE: 31.9560%
+Iter: 5   Update: 3.8141   RMSE: 30.7873%
+Iter: 6   Update: 2.9338   RMSE: 30.0084%
+Iter: 7   Update: 2.3089   RMSE: 29.4108%
+Iter: 8   Update: 1.8750   RMSE: 28.9624%
+Iter: 9   Update: 1.5711   RMSE: 28.6279%
+Iter: 10  Update: 1.3481   RMSE: 28.3666%
+Iter: 11  Update: 1.1784   RMSE: 28.1489%
+Iter: 12  Update: 1.0812   RMSE: 27.9731%
+Iter: 13  Update: 1.0336   RMSE: 27.8135%
+Iter: 14  Update: 1.0263   RMSE: 27.6901%
+Iter: 15  Update: 1.0527   RMSE: 27.5646%
+Iter: 16  Update: 1.0916   RMSE: 27.4762%
+Iter: 17  Update: 1.1444   RMSE: 27.3731%
+Iter: 18  Update: 1.1931   RMSE: 27.3083%
+Iter: 19  Update: 1.2367   RMSE: 27.2213%
+Iter: 20  Update: 1.2767   RMSE: 27.1729%
+Iter: 21  Update: 1.3129   RMSE: 27.0989%
+Iter: 22  Update: 1.3434   RMSE: 27.0614%
+Iter: 23  Update: 1.3693   RMSE: 26.9981%
+Iter: 24  Update: 1.3921   RMSE: 26.9686%
+Iter: 25  Update: 1.4134   RMSE: 26.9140%
+corrido en 142.85033321380615 segundos
+
+--- RMSE FINAL SUSCEPTIBILIDAD ---
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 26.89%
+--------------------------------
+Saved figure to: results/wTDV_QSM_torch_3d.png
+Saved figure to: figures/wTDV_vz_torch_3d.png
+Saved figure to: figures/wTDV_zz_torch_3d.png
+Saved figure to: figures/wTDV_sz_torch_3d.png

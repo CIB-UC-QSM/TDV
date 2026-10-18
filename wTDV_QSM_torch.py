@@ -1,4 +1,5 @@
 #%%
+import argparse
 import os
 import time
 import numpy as np
@@ -13,23 +14,45 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('high')  # Habilita TF32
 
+# --checkpoint elige el modelo TDV, de 3 canales: el volumen entra como tripletes de cortes adyacentes (color)
+parser = argparse.ArgumentParser()
+parser.add_argument('--checkpoint', default='tdv3-3-25-f32-color.pth', help='.pth de checkpoints/ que esté en PARAMS')
+args = parser.parse_known_args()[0]  # parse_known_args para no chocar con los argumentos de Jupyter
+
+# Parámetros asociados a cada checkpoint, de grid_search_wtdv.py; tolUpdate es sobre el Update dentro del cerebro
+PARAMS = {
+    'tdv3-3-25-f32-color.pth': {'mu': 0.008, 'target_std': 0.06, 'tolUpdate': 0.3},
+    't1p1delta-rapido-100k.pth': {'mu': 0.006, 'target_std': 0.06, 'tolUpdate': 0.3},
+    't2delta-100k-s1.pth': {'mu': 0.004, 'target_std': 0.06, 'tolUpdate': 1.0},
+    't8delta-100k-s1.pth': {'mu': 0.006, 'target_std': 0.07, 'tolUpdate': 0.75},
+    'ciego2d-35k.pth': {'mu': 0.006, 'target_std': 0.04, 'tolUpdate': 1.5},
+}
+if args.checkpoint not in PARAMS:
+    raise SystemExit(f"{args.checkpoint} no está en PARAMS: buscarle mu, target_std y tolUpdate con grid_search_wtdv.py")
+PARAMS = {'checkpoint': args.checkpoint, **PARAMS[args.checkpoint]}
+checkpoint = torch.load(os.path.join('checkpoints', args.checkpoint))
+C = 3  # tripletes de cortes adyacentes como R, G, B
+
+# La salida va a results/checkpoints/<checkpoint>/; las imágenes de results/ y figures/ son las originales del repo
+SALIDA = os.path.join('results', 'checkpoints', args.checkpoint.removesuffix('.pth'))
+
 tic = time.time()
 
 #Load MATLAB data container
-phase_np = scipy.io.loadmat('params.mat')['phase_use'].astype(np.float32)
-kernel_np = scipy.io.loadmat('params.mat')['kernel'].astype(np.float32)
+phase_np = scipy.io.loadmat('data_mat/params.mat')['phase_use'].astype(np.float32)
+kernel_np = scipy.io.loadmat('data_mat/params.mat')['kernel'].astype(np.float32)
 K2_np = np.conj(kernel_np)*kernel_np # El kernel en params.mat YA tiene su centro en [0,0,0] / no aplicamos ifftshift
-weight_np = scipy.io.loadmat('params.mat')['magn_use'].astype(np.float32)
+weight_np = scipy.io.loadmat('data_mat/params.mat')['magn_use'].astype(np.float32)
 maxOuterIter = 100
-tolUpdate = 0.39
-chi_cosmos = scipy.io.loadmat('chi_cosmos.mat')['chi_cosmos'].astype(np.float32)
+tolUpdate = PARAMS['tolUpdate']
+chi_cosmos = scipy.io.loadmat('data_mat/chi_cosmos.mat')['chi_cosmos'].astype(np.float32)
 cosmos_mask = chi_cosmos != 0
-mu = 0.008  # Optimizacion via grid search resulta en 0.008
+mu = PARAMS['mu']  # Optimizacion via grid search: 0.008 para 3 canales
 mu2 = 1.0
-#scipy.io.loadmat('params.mat')['alpha1'].astype(np.float32)[0,0] # Es 0.04 / el valor de referencia de Carlos es 0.0245
-#scipy.io.loadmat('params.mat')['mu1'].astype(np.float32)[0,0] # Es 1.0
-#scipy.io.loadmat('params.mat')['tol_update'].astype(np.float32)[0,0] # Es 0.5
-#scipy.io.loadmat('params.mat')['maxOuterIter'][0,0] # Es 100
+#scipy.io.loadmat('data_mat/params.mat')['alpha1'].astype(np.float32)[0,0] # Es 0.04 / el valor de referencia de Carlos es 0.0245
+#scipy.io.loadmat('data_mat/params.mat')['mu1'].astype(np.float32)[0,0] # Es 1.0
+#scipy.io.loadmat('data_mat/params.mat')['tol_update'].astype(np.float32)[0,0] # Es 0.5
+#scipy.io.loadmat('data_mat/params.mat')['maxOuterIter'][0,0] # Es 100
 
 # --- MASKING Y SKULL-STRIPPING ---
 # Generamos máscaras del cerebro para aislarlo de ruido en el cráneo y fondo.
@@ -58,6 +81,7 @@ K2 = torch.from_numpy(K2_np).to(device)
 weight = torch.from_numpy(weight_np).to(device)
 Wy = torch.from_numpy(Wy_np).to(device)
 mask_torch = torch.from_numpy(refined_mask).to(device) # Máscara en GPU para estadísticas
+mask_f = mask_torch.float()  # para enmascarar z1 en cada iteración
 
 # Autocast dtype fallback para tarjetas gráficas más antiguas
 amp_dtype = torch.bfloat16 if (device.type == 'cuda' and torch.cuda.is_bf16_supported()) else torch.float16
@@ -87,15 +111,16 @@ s2 = torch.zeros(N, dtype=torch.float32, device=device)
 # Pre-alocar tensores del bucle TDV para evitar memory leaks/fragmentation
 z1_accum = torch.zeros(N, dtype=torch.float32, device=device)
 z1_count = torch.zeros(N, dtype=torch.float32, device=device)
-center_indices = list(range(1, N[2]-1))
+num_windows = N[2] - C + 1  # ventanas de C cortes adyacentes en el eje z
 
 # Antes se recomputaba idéntico en cada iteración ADMM; ahora sólo z1_accum se resetea.
-z1_count[:, :, 0:N[2]-2] += 1
-z1_count[:, :, 1:N[2]-1] += 1
-z1_count[:, :, 2:N[2]] += 1
+# Cuántas ventanas cubren cada corte: 1, 2, 3, ..., 3, 2, 1
+for c in range(C):
+    z1_count[:, :, c:num_windows+c] += 1
 #z1_count[z1_count == 0] = 1.0
 
 print("\n--- ESTADÍSTICAS INICIALES ---")
+print(f"Modelo de {C} canal(es): {PARAMS['checkpoint']}")
 print_stats("mu", mu)
 print_stats("mu2", mu2)
 print_stats("phase", phase)
@@ -103,8 +128,6 @@ print_stats("weight (W^2)", weight)
 print_stats("Wy (W^2 * phase)", Wy)
 print("------------------------------\n")
 
-color = 'color'
-checkpoint = torch.load(os.path.join('checkpoints', f'tdv3-3-25-f32-{color}.pth'))
 vn = model.VNet(checkpoint['config'], efficient=False)
 vn.load_state_dict(checkpoint['model'])
 vn.to(device)
@@ -115,7 +138,7 @@ vn.eval()
 vn = torch.compile(vn, mode="max-autotune")
 
 # --- ITERACIONES ADMM ---
-# Nota: TDV se entrenó con imágenes RGB [0, 1]. Las imágenes QSM están en ppm [-0.1, 0.1].
+# Nota: TDV se entrenó con imágenes RGB en [0, 1]. Las imágenes QSM están en ppm [-0.1, 0.1].
 # Para evitar artefactos, escalamos dinámicamente la entrada usando alpha para engañar
 # a la red y que procese los datos QSM como si fueran contrastes naturales.
 
@@ -139,9 +162,9 @@ for t in range(0, maxOuterIter):
         # Para que la red TDV preserve venas y bordes, necesitamos que la señal
         # supere con creces el ruido con el que fue entrenada (sigma ~0.1).
         # Un target Std de 0.3 en el tejido garantiza una fuerte activación no-lineal,
-        # pero lo optimizamos con un grid-search a 0.06 para que el suavizado sea más sutil
-        # y no distorsione tanto la geometría.
-        target_std = 0.06
+        # pero lo optimizamos con un grid-search (0.06 con 3 canales) para que el suavizado
+        # sea más sutil y no distorsione tanto la geometría.
+        target_std = PARAMS['target_std']
         qsm_std = torch.std(qsm[mask_torch])
         alpha = target_std / qsm_std.item()
         
@@ -149,9 +172,9 @@ for t in range(0, maxOuterIter):
         print(f"[FINE TUNING] Alpha calibrado matemáticamente a: {alpha:.4f}")
         print_stats("qsm (update)", qsm)
     
-    # Retomamos el cálculo original para el update (sin enmascarar)
-    # para no alterar el criterio de parada original del ADMM.
-    x_update = 100*torch.sqrt(torch.mean((qsm-qsm_old) ** 2))/torch.sqrt(torch.mean((qsm) ** 2))
+    # Update sólo dentro del cerebro, donde la QSM se usa y se evalúa: afuera no hay datos (W^2 = 0) y el fondo
+    # nunca termina de asentarse. Es el update de FANSI sobre mask.*x, como en su WH-QSM.
+    x_update = 100*torch.norm((qsm-qsm_old)[mask_torch])/torch.norm(qsm[mask_torch])
     current_rmse = rmse(qsm.cpu().numpy(), chi_cosmos, mask=cosmos_mask) # Comentar/descomentar para imprimir valores
     print(f"Iter: {t:<3} Update: {x_update.item():<8.4f} RMSE: {current_rmse:.4f}%") # Comentar/descomentar para imprimir valores
 
@@ -162,25 +185,25 @@ for t in range(0, maxOuterIter):
     # Aplicamos TDV usando el escalado dinámico 'alpha'. Esto asegura que el input tenga 
     # la desviación estándar objetivo (target_std), activando correctamente los filtros 
     # no-lineales preservadores de bordes, sin necesidad de reentrenar la red.
-    v = qsm + s1
+    v = (qsm + s1) * mask_f  # la entrada del TDV también: con z1 = 0 afuera, el prox no depende de v afuera
     if t == 0:
         print_stats("v (qsm + s1)", v)
     
-    # Construcción de minibatches: extraemos 3 cortes adyacentes rápidamente usando unfold
+    # Construcción de minibatches: extraemos C cortes adyacentes rápidamente usando unfold
     # evitando torch.stack que copia memoria masivamente y ralentiza la iteración.
     z1_accum.zero_()
-    
+
     # v_DHW tiene shape (D, H, W)
-    v_DHW = v.permute(2, 0, 1).contiguous() 
-    # unfold extrae ventanas de tamaño 3 en la dimension 0. Shape: (D-2, H, W, 3)
-    # permute la convierte a (D-2, 3, H, W) original
-    triplets = v_DHW.unfold(0, 3, 1).permute(0, 3, 1, 2)
-    
+    v_DHW = v.permute(2, 0, 1).contiguous()
+    # unfold extrae ventanas de tamaño C en la dimension 0. Shape: (D-C+1, H, W, C)
+    # permute la convierte a (D-C+1, C, H, W)
+    windows = v_DHW.unfold(0, C, 1).permute(0, 3, 1, 2)
+
     # Procesamiento en minibatches dinámicos según VRAM disponible
-    for b_start in range(0, len(center_indices), BATCH_SIZE):
-        b_end = min(b_start + BATCH_SIZE, len(center_indices))
-        batch = triplets[b_start:b_end]  # (B, 3, H, W)
-        
+    for b_start in range(0, num_windows, BATCH_SIZE):
+        b_end = min(b_start + BATCH_SIZE, num_windows)
+        batch = windows[b_start:b_end]  # (B, C, H, W)
+
         with torch.no_grad(), torch.autocast(device_type='cuda', dtype=amp_dtype):
             batch_alpha = batch.contiguous().to(memory_format=torch.channels_last) * alpha
             if t == 0 and b_start == 0:
@@ -188,21 +211,21 @@ for t in range(0, maxOuterIter):
                 
             x_batch = vn(batch_alpha, batch_alpha)
         
-        outputs = x_batch[-1]  # (B, 3, H, W) — last VNet step
-        
+        outputs = x_batch[-1]  # (B, C, H, W) — last VNet step
+
         if t == 0 and b_start == 0:
             print_stats("outputs (VNet)", outputs)
-        
+
         # Vectorized accumulation
-        # outputs shape: (B, 3, H, W). We permute to (B, H, W, 3) to match z1_accum shape
-        outputs_perm = (outputs / alpha).permute(0, 2, 3, 1) # (B, H, W, 3)
-        
-        # Accumulate slices
-        z1_accum[:, :, b_start:b_end] += outputs_perm[:, :, :, 0].permute(1, 2, 0)
-        z1_accum[:, :, b_start+1:b_end+1] += outputs_perm[:, :, :, 1].permute(1, 2, 0)
-        z1_accum[:, :, b_start+2:b_end+2] += outputs_perm[:, :, :, 2].permute(1, 2, 0)
-        
+        # outputs shape: (B, C, H, W). We permute to (B, H, W, C) to match z1_accum shape
+        outputs_perm = (outputs / alpha).permute(0, 2, 3, 1) # (B, H, W, C)
+
+        # Accumulate slices: el canal c de la ventana b es el corte b+c
+        for c in range(C):
+            z1_accum[:, :, b_start+c:b_end+c] += outputs_perm[:, :, :, c].permute(1, 2, 0)
+
     z1 = z1_accum / z1_count  # z1_count precalculado una sola vez fuera del bucle
+    z1 = z1 * mask_f  # fuera del cerebro el prior es 0: ahí no hay datos y el TDV amplifica (bloque final, item 6)
     s1 += qsm - z1
     
     if t == 0:
@@ -217,23 +240,26 @@ toc = time.time()
 print(f"corrido en {toc-tic} segundos")
 
 ## Save output and Convert to NIfTI / RAS convention
-qsm_np = qsm.cpu().numpy()
+qsm_np = (qsm * mask_f).cpu().numpy()  # mapa final por la máscara (consenso QSM, MRM 2024)
 v_np = v.cpu().numpy()
 z1_np = z1.cpu().numpy()
 s1_np = s1.cpu().numpy()
 mdic = {"x": qsm_np, "time":(toc-tic),"iter":(t+1)}
-scipy.io.savemat('results/wTDV_QSM_torch.mat', mdic)
-
 rmse_val = rmse(qsm_np, chi_cosmos, mask=cosmos_mask)
 print(f"\n[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): {rmse_val:.2f}%")
 
-imshow_3d(qsm_np, title="wTDV_QSM (x)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='results/wTDV_QSM_torch.png')
-imshow_3d(v_np, title="v (input to TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_v_torch.png')
-imshow_3d(z1_np, title="z1 (output of TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_z1_torch.png')
-imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath='figures/wTDV_s1_torch.png')
+os.makedirs(SALIDA, exist_ok=True)
+titulo = f"wTDV_QSM (x) · {os.path.basename(SALIDA)}\nμ={mu}, std={PARAMS['target_std']} · {t+1} iter · RMSE {rmse_val:.2f}%"
+scipy.io.savemat(os.path.join(SALIDA, 'wTDV_QSM_torch.mat'), mdic)
+
+imshow_3d(qsm_np, title=titulo, rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath=os.path.join(SALIDA, 'wTDV_QSM_torch.png'))
+imshow_3d(v_np, title="v (input to TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath=os.path.join(SALIDA, 'wTDV_v_torch.png'))
+imshow_3d(z1_np, title="z1 (output of TDV)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath=os.path.join(SALIDA, 'wTDV_z1_torch.png'))
+imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90, 90), savepath=os.path.join(SALIDA, 'wTDV_s1_torch.png'))
 
 '''
 --- ESTADÍSTICAS INICIALES ---
+Modelo de 3 canal(es): tdv3-3-25-f32-color.pth
 [DEBUG] mu              | Valor:   0.0080
 [DEBUG] mu2             | Valor:   1.0000
 [DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
@@ -241,54 +267,49 @@ imshow_3d(s1_np, title="s1 (dual variable)", rango=(-0.1, 0.1), angles=(-90, -90
 [DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
 ------------------------------
 
+
 --- ESTADÍSTICAS ITERACIÓN 0 ---
 [FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
 [DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0060
+Iter: 0   Update: 100.0000 RMSE: 65.8201%
 [DEBUG] v (qsm + s1)    | Rango:  -0.1263 a   0.1953 | Media:   0.0000 | Std:   0.0060
 [DEBUG] batch * alpha   | Rango:  -0.6137 a   0.9488 | Media:  -0.0000 | Std:   0.0293
-[DEBUG] outputs (VNet)  | Rango:  -0.4770 a   0.8491 | Media:  -0.0000 | Std:   0.0210
-[DEBUG] z1 (TDV out)    | Rango:  -0.0841 a   0.1558 | Media:  -0.0000 | Std:   0.0043
-[DEBUG] s1 (dual)       | Rango:  -0.0567 a   0.0649 | Media:   0.0000 | Std:   0.0036
+[DEBUG] outputs (VNet)  | Rango:  -0.4776 a   0.8494 | Media:  -0.0000 | Std:   0.0210
+[DEBUG] z1 (TDV out)    | Rango:  -0.0841 a   0.1558 | Media:   0.0000 | Std:   0.0042
+[DEBUG] s1 (dual)       | Rango:  -0.0567 a   0.0649 | Media:  -0.0000 | Std:   0.0037
 --------------------------------
 
---- RMSE FINAL FASE PREDICHA VS FASE REAL ---
-[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 27.34%
---------------------------------
 
-Iter: 1   Update: 49.2762  RMSE: 43.5523%
-Iter: 2   Update: 18.6148  RMSE: 36.8198%
-Iter: 3   Update: 8.8699   RMSE: 33.8320%
-Iter: 4   Update: 5.4920   RMSE: 32.2225%
-Iter: 5   Update: 4.0153   RMSE: 31.1436%
-Iter: 6   Update: 3.1015   RMSE: 30.4033%
-Iter: 7   Update: 2.3905   RMSE: 29.8363%
-Iter: 8   Update: 1.9227   RMSE: 29.3947%
-Iter: 9   Update: 1.6220   RMSE: 29.0630%
-Iter: 10  Update: 1.3970   RMSE: 28.8145%
-Iter: 11  Update: 1.1728   RMSE: 28.6108%
-Iter: 12  Update: 1.0136   RMSE: 28.4436%
-Iter: 13  Update: 0.8980   RMSE: 28.3024%
-Iter: 14  Update: 0.7974   RMSE: 28.1821%
-Iter: 15  Update: 0.7192   RMSE: 28.0775%
-Iter: 16  Update: 0.6569   RMSE: 27.9864%
-Iter: 17  Update: 0.6085   RMSE: 27.9061%
-Iter: 18  Update: 0.5704   RMSE: 27.8353%
-Iter: 19  Update: 0.5393   RMSE: 27.7719%
-Iter: 20  Update: 0.5115   RMSE: 27.7155%
-Iter: 21  Update: 0.4891   RMSE: 27.6646%
-Iter: 22  Update: 0.4690   RMSE: 27.6191%
-Iter: 23  Update: 0.4529   RMSE: 27.5777%
-Iter: 24  Update: 0.4409   RMSE: 27.5407%
-Iter: 25  Update: 0.4281   RMSE: 27.5070%
-Iter: 26  Update: 0.4189   RMSE: 27.4767%
-Iter: 27  Update: 0.4101   RMSE: 27.4490%
-Iter: 28  Update: 0.4040   RMSE: 27.4241%
-Iter: 29  Update: 0.3974   RMSE: 27.4010%
-Iter: 30  Update: 0.3934   RMSE: 27.3807%
-Iter: 31  Update: 0.3878   RMSE: 27.3615%
+Iter: 1   Update: 49.5622  RMSE: 43.2051%
+Iter: 2   Update: 17.6198  RMSE: 36.3514%
+Iter: 3   Update: 8.1289   RMSE: 33.3487%
+Iter: 4   Update: 4.9215   RMSE: 31.7137%
+Iter: 5   Update: 3.6680   RMSE: 30.5869%
+Iter: 6   Update: 2.8969   RMSE: 29.7877%
+Iter: 7   Update: 2.2635   RMSE: 29.1585%
+Iter: 8   Update: 1.8555   RMSE: 28.6572%
+Iter: 9   Update: 1.5920   RMSE: 28.2704%
+Iter: 10  Update: 1.3962   RMSE: 27.9725%
+Iter: 11  Update: 1.1888   RMSE: 27.7250%
+Iter: 12  Update: 1.0416   RMSE: 27.5213%
+Iter: 13  Update: 0.9277   RMSE: 27.3512%
+Iter: 14  Update: 0.8234   RMSE: 27.2102%
+Iter: 15  Update: 0.7335   RMSE: 27.0934%
+Iter: 16  Update: 0.6570   RMSE: 26.9967%
+Iter: 17  Update: 0.5916   RMSE: 26.9166%
+Iter: 18  Update: 0.5371   RMSE: 26.8507%
+Iter: 19  Update: 0.4931   RMSE: 26.7948%
+Iter: 20  Update: 0.4563   RMSE: 26.7479%
+Iter: 21  Update: 0.4247   RMSE: 26.7073%
+Iter: 22  Update: 0.3952   RMSE: 26.6722%
+Iter: 23  Update: 0.3675   RMSE: 26.6410%
+Iter: 24  Update: 0.3409   RMSE: 26.6136%
+Iter: 25  Update: 0.3165   RMSE: 26.5887%
+corrido en 55.93275690078735 segundos
 
-corrido en 67.2 segundos
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 26.57%
 '''
+
 '''
 =============================================================================
 LOG DE OPTIMIZACIONES Y RESOLUCIÓN MATEMÁTICA:
@@ -313,6 +334,11 @@ LOG DE OPTIMIZACIONES Y RESOLUCIÓN MATEMÁTICA:
 5. Restricción del Dual (mu):
    - Problema: Valores altos (mu=1.0) aplastaban los datos.
    - Solución: Optimizamos a mu=0.02. Combinado con un target_std bajo (0.1), logra el equilibrio perfecto entre Data Fidelity (física) y Prior TDV.
+
+6. Máscara en la salida del TDV (z1):
+   - Problema: fuera del cerebro (77% del volumen) no hay datos (W^2 = 0) y el TDV de los checkpoints de Training-TDV
+     amplifica ahí las perturbaciones: el fondo queda texturado y el ADMM no se asienta.
+   - Solución: z1 = z1 * mask_f en cada iteración, como LPCNN y MoDL-QSM con la salida de su red. Oficial 27.38% ->
+     26.57% (31 -> 27 iteraciones), 2δ 28.82% -> 28.18%, 8δ 28.37% -> 27.83%. Proyectar también qsm dio peor.
 =============================================================================
 '''
-# %%

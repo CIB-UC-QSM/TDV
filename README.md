@@ -132,7 +132,25 @@ El pipeline espera dos archivos MATLAB en la raíz del repositorio:
 python wTDV_QSM_torch.py
 ```
 
-Aplica TDV en tríos de cortes axiales adyacentes usando `tensor.unfold`. Equilibrio entre calidad y uso de VRAM. Salida en `results/wTDV_QSM_torch.mat`.
+Aplica TDV en tríos de cortes axiales adyacentes usando `tensor.unfold`. Equilibrio entre calidad y uso de VRAM. Usa el checkpoint oficial; salida en `results/checkpoints/tdv3-3-25-f32-color/`.
+
+```bash
+python wTDV_QSM_torch.py --checkpoint t2delta-100k-s1.pth
+```
+
+`--checkpoint` elige otro `.pth` de `checkpoints/`, de 3 canales; tiene que estar en `PARAMS`, al principio del script, con su `μ`, `target_std` y `tolUpdate`, y si no está el script lo dice y no corre. Para buscar parámetros de otro checkpoint: `python grid_search_wtdv.py --checkpoint <archivo>`. Los de Training-TDV:
+
+| Checkpoint | `T` aprendido | `μ` | `target_std` | `tolUpdate` | Iteraciones | RMSE |
+|---|---|---|---|---|---|---|
+| `tdv3-3-25-f32-color.pth` (oficial) | 1.95·δ_Adam | 0.008 | 0.06 | 0.3 | 36 | **26.45%** |
+| `t1p1delta-rapido-100k.pth` | 2.23·δ_Adam | 0.006 | 0.06 | 0.3 | 32 | 27.75% |
+| `t2delta-100k-s1.pth` | 2.76·δ_Adam | 0.004 | 0.06 | 1.0 | 26 | 28.19% |
+| `t8delta-100k-s1.pth` | 6.53·δ_Adam | 0.006 | 0.07 | 0.75 | 31 | 28.12% |
+| `ciego2d-35k.pth` (ciego al ruido) | 7.91·δ_Adam | 0.006 | 0.04 | 1.5 | 13 | 29.11% |
+
+Ninguno alcanza al oficial. Los parámetros salen de `grid_search_wtdv.py` con el solver enmascarado (`results/grid/`): de los cortes en que el `Update` baja de `tolUpdate` y se queda abajo, el de menos iteraciones a 0.05 pp o menos de la mejor RMSE. Por qué rinden peor como prior de QSM está medido en Training-TDV (`docs/mediciones/qsm-prior-4corridas.txt`).
+
+Las salidas de cada corrida están en [`results/checkpoints/`](results/checkpoints/): una carpeta por checkpoint, con la QSM, las tres figuras de diagnóstico y el log de la corrida (`corrida.log`).
 
 ### Reconstrucción pseudo-3D
 
@@ -140,14 +158,16 @@ Aplica TDV en tríos de cortes axiales adyacentes usando `tensor.unfold`. Equili
 python wTDV_QSM_torch_3d.py
 ```
 
-Calcula el prior TDV en los tres ejes ortogonales (axial, coronal, sagital) y promedia las reconstrucciones. Mejor RMSE al costo de ~2× el tiempo. Salida en `results/wTDV_QSM_torch_3d.mat`.
+Calcula el prior TDV en los tres ejes ortogonales (axial, coronal, sagital) y promedia las reconstrucciones. Mejor RMSE al costo de ~4× el tiempo. Acepta el mismo `--checkpoint`, sólo de 3 canales porque arma tripletes en los tres ejes, con el `μ` y el `target_std` del 2D; su criterio de parada está ajustado con el oficial. Salida en `results/checkpoints/<checkpoint>-3d/`.
 
 ### Salidas comunes
 
-Ambos scripts generan automáticamente:
-- `results/*.mat` — susceptibilidad reconstruida + tiempo de ejecución + número de iteraciones
-- `results/*.png` — visualización 3D ortogonal de la susceptibilidad
-- `figures/` — imágenes de diagnóstico de variables internas (`v`, `z1/zz`, `s1/sz`)
+Ambos scripts generan, en `results/checkpoints/<checkpoint>/` (el 3D en `<checkpoint>-3d/`), con el checkpoint, los parámetros, las iteraciones y el RMSE en el título:
+- `.mat` — susceptibilidad reconstruida + tiempo de ejecución + número de iteraciones
+- `.png` de la QSM — visualización 3D ortogonal de la susceptibilidad
+- imágenes de diagnóstico de variables internas (`v`, `z1/zz`, `s1/sz`). `v` y `s1` se ven ruidosas por construcción: en el punto fijo del ADMM `s1 = v − TDV(v)`, lo que el denoiser le saca a `v`; la QSM es `x`, no `v`
+
+Las imágenes de `results/` y `figures/` son las originales del repo y ningún script las escribe. Las carpetas `<checkpoint>-mascara-<ninguna|qsm|ambas>/` y `tdv3-3-25-f32-color-3d-sin-mascara/` son de la comparación del item 6 del bloque final del script.
 
 ---
 
@@ -164,8 +184,10 @@ min_x  ½ ‖W(Dx - φ)‖² + μ · R_TDV(x)
 Resuelto con ADMM en tres bloques:
 
 1. **Actualización de `x`** — Paso cuadrático en dominio de Fourier (solución cerrada vía FFT).
-2. **Paso proximal `z1` — Prior TDV** — La VNet procesa tríos de cortes escalados con `alpha`; el escalado dinámico se calibra en la iteración 0 para que la std del input alcance `target_std = 0.06`.
+2. **Paso proximal `z1` — Prior TDV** — La VNet procesa tríos de cortes escalados con `alpha`; el escalado dinámico se calibra en la iteración 0 para que la std del input alcance `target_std = 0.06`. Su entrada y su salida se multiplican por la máscara del cerebro en cada iteración, como hacen LPCNN y MoDL-QSM con su red, y el mapa final también: afuera no hay datos (`W² = 0`) y el TDV amplifica. Proyectar también `x` tras la FFT, como WH-QSM de FANSI, dio peor (bloque final del script, item 6).
 3. **Paso proximal `z2` — Data fidelity** — Resolución analítica con pesos de magnitud `W²`.
+
+El bucle corta cuando el cambio relativo de `x` entre iteraciones (`Update`, en %) baja de `tolUpdate`. El `Update` se mide sólo dentro de la máscara del cerebro, que es donde la QSM se usa y se evalúa: afuera no hay datos (`W² = 0`) y el fondo nunca termina de asentarse. Equivale al update de FANSI sobre `mask.*x`, como en su variante WH-QSM, que proyecta χ en la máscara en cada iteración.
 
 ### Skull-stripping automático
 
@@ -195,21 +217,27 @@ Evaluados sobre el dataset COSMOS incluido (`chi_cosmos.mat`) con parámetros `�
 
 | Métrica | Valor |
 |---|---|
-| RMSE final | **27.34%** |
-| Iteraciones hasta convergencia | 31 |
-| Tiempo de ejecución (GPU ≥ 12 GB VRAM) | ~67 s |
-| `tolUpdate` | 0.39 |
+| RMSE final | **26.45%** |
+| Iteraciones hasta convergencia | 36 |
+| Tiempo de ejecución (GPU ≥ 12 GB VRAM) | ~71 s |
+| `tolUpdate` (Update dentro del cerebro) | 0.3 |
+
+> Con la entrada y la salida del TDV enmascaradas en cada iteración y el mapa final enmascarado. Sin máscaras daba 27.38% en 31 iteraciones (~64 s). Con el `Update` sobre todo el volumen, el criterio anterior, `tolUpdate = 0.39` cortaba en el mismo punto (31–33 iteraciones, 27.34%).
+>
+> El pseudo-3D de abajo enmascara igual sus tres priors y queda por debajo del 2D (25.94% contra 26.45%).
 
 ### Script pseudo-3D (`wTDV_QSM_torch_3d.py`)
 
 | Métrica | Valor |
 |---|---|
-| RMSE final | **26.89%** |
-| Iteraciones hasta convergencia | 25 |
-| Tiempo de ejecución (GPU ≥ 12 GB VRAM) | ~144 s |
-| `tolUpdate` | 1.05 |
+| RMSE final | **25.94%** |
+| Iteraciones | 100 (el criterio de parada no se dispara, ver nota) |
+| Tiempo de ejecución (GPU ≥ 12 GB VRAM) | ~509 s |
+| `tolUpdate` / `finUpdate` (Update sobre todo el volumen) | 1.15 / 1.30 |
 
-> La mejora de RMSE del 3D (+0.45 pp) se logra incorporando coherencia isotrópica mediante el promediado de los priors axial, coronal y sagital, al costo de ~2× el tiempo de cómputo.
+> Con la entrada y la salida del TDV enmascaradas en los tres ejes y el mapa final enmascarado. Sin máscaras daba 26.89% en 26 iteraciones (~143 s). El corte (bajar de `tolUpdate` y después pasar `finUpdate`) se ajustó con sólo la salida enmascarada; con la entrada también enmascarada el `Update` baja sólo hasta 1.24 y se queda en ~1.39, así que corre las 100; la RMSE ya está en 25.95% en la iteración 40.
+
+> La mejora de RMSE del 3D sobre el 2D (0.51 pp: 25.94% contra 26.45%) se logra incorporando coherencia isotrópica mediante el promediado de los priors axial, coronal y sagital.
 
 > **Nota sobre los datos:** los experimentos actuales usan una fase de alta SNR (casi sin ruido). Los resultados deben interpretarse en ese contexto; la evaluación con fases ruidosas es parte del trabajo futuro.
 
@@ -219,6 +247,7 @@ Evaluados sobre el dataset COSMOS incluido (`chi_cosmos.mat`) con parámetros `�
 
 - [ ] **Evaluación con ruido sintético:** agregar ruido gaussiano controlado a la fase para evaluar la robustez del regularizador TDV en condiciones realistas de adquisición.
 - [ ] **Estrategias alternativas al promediado 3D:** explorar combinaciones ponderadas por confianza, fusión aprendida, o regularización isotrópica verdadera en lugar de promediar ejes ortogonales.
+  - Ya probado el 2026-07-04 (rama `worktree-qsm-fusion-experiments`, integrada; el script `wTDV_QSM_torch_3d_experiments.py` quedó en la historia, `git show 92a25e6:wTDV_QSM_torch_3d_experiments.py`, y corre sobre el código con Optox anterior a `e7cdf19`). Con `μ = 0.02`, `target_std = 0.1`, sobre-relajación ADMM 1.6 y parada por meseta sin COSMOS: fusión espectral 27.37% en 12 iteraciones, promedio 27.65%, mediana 27.98%; reforzar el cono del ángulo mágico empeora (35–39%) y `μ` adaptativo diverge. Figuras en `figures/exp_{spectral,average,magic_angle,cosmos_gt}.png`. Falta portarlo al `wTDV_QSM_torch_3d.py` actual.
 - [ ] **Reentrenamiento del prior:** explorar fine-tuning de la VNet sobre datos QSM para eliminar la necesidad del escalado dinámico `alpha`.
 - [ ] **Comparación cuantitativa completa:** benchmark contra métodos clásicos (MEDI, iLSQR, STAR-QSM) sobre el mismo dataset.
 

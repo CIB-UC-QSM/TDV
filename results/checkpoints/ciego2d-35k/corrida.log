@@ -1,0 +1,40 @@
+
+--- ESTADÍSTICAS INICIALES ---
+Modelo de 3 canal(es): ciego2d-35k.pth
+[DEBUG] mu              | Valor:   0.0060
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 3.1113
+[DEBUG] qsm (update)    | Rango:  -0.1321 a   0.2043 | Media:  -0.0000 | Std:   0.0063
+Iter: 0   Update: 100.0000 RMSE: 64.9608%
+[DEBUG] v (qsm + s1)    | Rango:  -0.1321 a   0.2043 | Media:  -0.0000 | Std:   0.0061
+[DEBUG] batch * alpha   | Rango:  -0.4111 a   0.6357 | Media:  -0.0000 | Std:   0.0192
+[DEBUG] outputs (VNet)  | Rango:  -0.3375 a   0.5408 | Media:  -0.0000 | Std:   0.0165
+[DEBUG] z1 (TDV out)    | Rango:  -0.0797 a   0.1526 | Media:   0.0000 | Std:   0.0052
+[DEBUG] s1 (dual)       | Rango:  -0.0710 a   0.0618 | Media:  -0.0000 | Std:   0.0028
+--------------------------------
+
+Iter: 1   Update: 50.0759  RMSE: 43.6686%
+Iter: 2   Update: 14.7938  RMSE: 37.2426%
+Iter: 3   Update: 7.9330   RMSE: 34.2170%
+Iter: 4   Update: 5.2651   RMSE: 32.4130%
+Iter: 5   Update: 3.9397   RMSE: 31.2640%
+Iter: 6   Update: 3.0992   RMSE: 30.5043%
+Iter: 7   Update: 2.5335   RMSE: 29.9921%
+Iter: 8   Update: 2.1331   RMSE: 29.6451%
+Iter: 9   Update: 1.8333   RMSE: 29.4159%
+Iter: 10  Update: 1.5940   RMSE: 29.2652%
+Iter: 11  Update: 1.4070   RMSE: 29.1681%
+corrido en 32.43936538696289 segundos
+
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 29.11%
+Saved figure to: results/checkpoints/ciego2d-35k/wTDV_QSM_torch.png
+Saved figure to: results/checkpoints/ciego2d-35k/wTDV_v_torch.png
+Saved figure to: results/checkpoints/ciego2d-35k/wTDV_z1_torch.png
+Saved figure to: results/checkpoints/ciego2d-35k/wTDV_s1_torch.png

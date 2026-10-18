@@ -1,0 +1,59 @@
+
+--- ESTADÍSTICAS INICIALES ---
+Modelo de 3 canal(es): t1p1delta-rapido-100k.pth
+[DEBUG] mu              | Valor:   0.0060
+[DEBUG] mu2             | Valor:   1.0000
+[DEBUG] phase           | Rango:  -0.1623 a   0.1623 | Media:  -0.0000 | Std:   0.0825
+[DEBUG] weight (W^2)    | Rango:   0.0000 a  14.8348 | Media:   0.2370 | Std:   0.4706
+[DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
+------------------------------
+
+
+--- ESTADÍSTICAS ITERACIÓN 0 ---
+[FINE TUNING] Alpha calibrado matemáticamente a: 4.6669
+[DEBUG] qsm (update)    | Rango:  -0.1321 a   0.2043 | Media:  -0.0000 | Std:   0.0063
+Iter: 0   Update: 100.0000 RMSE: 64.9608%
+[DEBUG] v (qsm + s1)    | Rango:  -0.1321 a   0.2043 | Media:  -0.0000 | Std:   0.0061
+[DEBUG] batch * alpha   | Rango:  -0.6167 a   0.9535 | Media:  -0.0000 | Std:   0.0289
+[DEBUG] outputs (VNet)  | Rango:  -0.3614 a   0.7221 | Media:  -0.0000 | Std:   0.0213
+[DEBUG] z1 (TDV out)    | Rango:  -0.0594 a   0.1399 | Media:   0.0000 | Std:   0.0045
+[DEBUG] s1 (dual)       | Rango:  -0.0886 a   0.0700 | Media:  -0.0000 | Std:   0.0038
+--------------------------------
+
+Iter: 1   Update: 49.4645  RMSE: 43.2428%
+Iter: 2   Update: 16.5806  RMSE: 36.8068%
+Iter: 3   Update: 8.1068   RMSE: 33.9134%
+Iter: 4   Update: 5.0521   RMSE: 32.4191%
+Iter: 5   Update: 3.5694   RMSE: 31.3893%
+Iter: 6   Update: 2.7356   RMSE: 30.5914%
+Iter: 7   Update: 2.2410   RMSE: 29.9987%
+Iter: 8   Update: 1.8839   RMSE: 29.5536%
+Iter: 9   Update: 1.6127   RMSE: 29.2076%
+Iter: 10  Update: 1.4103   RMSE: 28.9314%
+Iter: 11  Update: 1.2487   RMSE: 28.7094%
+Iter: 12  Update: 1.1146   RMSE: 28.5287%
+Iter: 13  Update: 1.0045   RMSE: 28.3820%
+Iter: 14  Update: 0.9056   RMSE: 28.2625%
+Iter: 15  Update: 0.8202   RMSE: 28.1662%
+Iter: 16  Update: 0.7436   RMSE: 28.0884%
+Iter: 17  Update: 0.6724   RMSE: 28.0269%
+Iter: 18  Update: 0.6100   RMSE: 27.9777%
+Iter: 19  Update: 0.5546   RMSE: 27.9384%
+Iter: 20  Update: 0.5108   RMSE: 27.9065%
+Iter: 21  Update: 0.4743   RMSE: 27.8806%
+Iter: 22  Update: 0.4470   RMSE: 27.8586%
+Iter: 23  Update: 0.4215   RMSE: 27.8400%
+Iter: 24  Update: 0.4007   RMSE: 27.8241%
+Iter: 25  Update: 0.3784   RMSE: 27.8094%
+Iter: 26  Update: 0.3580   RMSE: 27.7969%
+Iter: 27  Update: 0.3368   RMSE: 27.7849%
+Iter: 28  Update: 0.3200   RMSE: 27.7742%
+Iter: 29  Update: 0.3040   RMSE: 27.7640%
+Iter: 30  Update: 0.2930   RMSE: 27.7549%
+corrido en 64.44024419784546 segundos
+
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 27.75%
+Saved figure to: results/checkpoints/t1p1delta-rapido-100k/wTDV_QSM_torch.png
+Saved figure to: results/checkpoints/t1p1delta-rapido-100k/wTDV_v_torch.png
+Saved figure to: results/checkpoints/t1p1delta-rapido-100k/wTDV_z1_torch.png
+Saved figure to: results/checkpoints/t1p1delta-rapido-100k/wTDV_s1_torch.png

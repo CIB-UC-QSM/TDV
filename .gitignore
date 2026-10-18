@@ -21,11 +21,9 @@ __pycache__/
 *.ckpt
 .DS_Store
 
-# Excluir parametros cosmotest y otros archivos mat
+# Excluir parametros cosmotest y otros archivos mat/nii
+*.nii
 *.mat
-params.mat
-entrenamiento.log
-checkpoints
 
 # Excluir claude
 .claude/
