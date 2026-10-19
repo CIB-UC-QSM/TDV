@@ -44,8 +44,8 @@ kernel_np = scipy.io.loadmat('data_mat/params.mat')['kernel'].astype(np.float32)
 K2_np = np.conj(kernel_np)*kernel_np # El kernel en params.mat YA tiene su centro en [0,0,0] / no aplicamos ifftshift
 weight_np = scipy.io.loadmat('data_mat/params.mat')['magn_use'].astype(np.float32)
 maxOuterIter = 100
-tolUpdate = 1.15 # El Update baja de acá y después vuelve a subir...
-finUpdate = 1.30 # ...y al pasar de acá se corta (ajustados con el oficial y la máscara)
+tolUpdate = 1.25 # El Update baja de acá y después vuelve a subir...
+finUpdate = 1.35 # ...y al pasar de acá se corta (ajustados con el oficial y la máscara)
 chi_cosmos = scipy.io.loadmat('data_mat/chi_cosmos.mat')['chi_cosmos'].astype(np.float32)
 cosmos_mask = chi_cosmos != 0
 mu = PARAMS['mu']
@@ -263,57 +263,52 @@ imshow_3d(sz_np, title="sz (dual variable Z)", rango=(-0.1, 0.1), angles=(-90, -
 [DEBUG] Wy (W^2 * phase) | Rango:  -0.1547 a   0.2549 | Media:   0.0001 | Std:   0.0049
 ------------------------------
 
+Modelo: tdv3-3-25-f32-color.pth
 Iter: 0   Update: 100.0000 RMSE: 65.8201%
 
 --- ESTADÍSTICAS ITERACIÓN 0 ---
 [FINE TUNING] Alpha calibrado matemáticamente a: 4.8591
 [DEBUG] qsm (update)    | Rango:  -0.1263 a   0.1953 | Media:  -0.0000 | Std:   0.0060
 [DEBUG] zz (TDV out Z)  | Rango:  -0.0841 a   0.1558 | Media:   0.0000 | Std:   0.0042
-[DEBUG] sz (dual Z)     | Rango:  -0.0567 a   0.0649 | Media:  -0.0000 | Std:   0.0037
+[DEBUG] sz (dual Z)     | Rango:  -0.0567 a   0.0647 | Media:  -0.0000 | Std:   0.0037
 --------------------------------
 
-Iter: 1   Update: 49.5429  RMSE: 43.2241%
-Iter: 2   Update: 19.8171  RMSE: 36.2729%
-Iter: 3   Update: 9.7232   RMSE: 33.1806%
-Iter: 4   Update: 6.1390   RMSE: 31.4455%
-Iter: 5   Update: 4.5467   RMSE: 30.2382%
-Iter: 6   Update: 3.5986   RMSE: 29.4061%
-Iter: 7   Update: 2.9202   RMSE: 28.7519%
-Iter: 8   Update: 2.4589   RMSE: 28.2461%
-Iter: 9   Update: 2.1291   RMSE: 27.8580%
-Iter: 10  Update: 1.8748   RMSE: 27.5475%
-Iter: 11  Update: 1.6682   RMSE: 27.2892%
-Iter: 12  Update: 1.5096   RMSE: 27.0769%
-Iter: 13  Update: 1.3786   RMSE: 26.8944%
-Iter: 14  Update: 1.2751   RMSE: 26.7502%
-Iter: 15  Update: 1.1976   RMSE: 26.6198%
-Iter: 16  Update: 1.1392   RMSE: 26.5264%
-Iter: 17  Update: 1.1114   RMSE: 26.4311%
-Iter: 18  Update: 1.0963   RMSE: 26.3734%
-Iter: 19  Update: 1.1097   RMSE: 26.3014%
-Iter: 20  Update: 1.1220   RMSE: 26.2658%
-Iter: 21  Update: 1.1406   RMSE: 26.2088%
-Iter: 22  Update: 1.1547   RMSE: 26.1866%
-Iter: 23  Update: 1.1721   RMSE: 26.1406%
-Iter: 24  Update: 1.1904   RMSE: 26.1252%
-Iter: 25  Update: 1.2043   RMSE: 26.0873%
-Iter: 26  Update: 1.2201   RMSE: 26.0760%
-Iter: 27  Update: 1.2300   RMSE: 26.0445%
-Iter: 28  Update: 1.2422   RMSE: 26.0365%
-Iter: 29  Update: 1.2495   RMSE: 26.0105%
-Iter: 30  Update: 1.2580   RMSE: 26.0049%
-Iter: 31  Update: 1.2642   RMSE: 25.9842%
-Iter: 32  Update: 1.2705   RMSE: 25.9806%
-Iter: 33  Update: 1.2758   RMSE: 25.9647%
-Iter: 34  Update: 1.2812   RMSE: 25.9620%
-Iter: 35  Update: 1.2866   RMSE: 25.9500%
-Iter: 36  Update: 1.2913   RMSE: 25.9478%
-Iter: 37  Update: 1.2963   RMSE: 25.9390%
-Iter: 38  Update: 1.3007   RMSE: 25.9369%
-corrido en 208.7013645172119 segundos
+Iter: 1   Update: 49.5616  RMSE: 43.1940%
+Iter: 2   Update: 19.9101  RMSE: 36.2359%
+Iter: 3   Update: 9.7921   RMSE: 33.1275%
+Iter: 4   Update: 6.1680   RMSE: 31.3760%
+Iter: 5   Update: 4.5707   RMSE: 30.1499%
+Iter: 6   Update: 3.6206   RMSE: 29.2998%
+Iter: 7   Update: 2.9462   RMSE: 28.6309%
+Iter: 8   Update: 2.4879   RMSE: 28.1147%
+Iter: 9   Update: 2.1592   RMSE: 27.7188%
+Iter: 10  Update: 1.9077   RMSE: 27.4063%
+Iter: 11  Update: 1.7049   RMSE: 27.1481%
+Iter: 12  Update: 1.5517   RMSE: 26.9411%
+Iter: 13  Update: 1.4347   RMSE: 26.7644%
+Iter: 14  Update: 1.3453   RMSE: 26.6302%
+Iter: 15  Update: 1.2895   RMSE: 26.5088%
+Iter: 16  Update: 1.2492   RMSE: 26.4254%
+Iter: 17  Update: 1.2399   RMSE: 26.3417%
+Iter: 18  Update: 1.2383   RMSE: 26.2901%
+Iter: 19  Update: 1.2571   RMSE: 26.2316%
+Iter: 20  Update: 1.2712   RMSE: 26.1975%
+Iter: 21  Update: 1.2892   RMSE: 26.1551%
+Iter: 22  Update: 1.3004   RMSE: 26.1309%
+Iter: 23  Update: 1.3126   RMSE: 26.0992%
+Iter: 24  Update: 1.3213   RMSE: 26.0807%
+Iter: 25  Update: 1.3315   RMSE: 26.0566%
+Iter: 26  Update: 1.3386   RMSE: 26.0417%
+Iter: 27  Update: 1.3504   RMSE: 26.0237%
+corrido en 152.5 segundos
 
 --- RMSE FINAL SUSCEPTIBILIDAD ---
-[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 25.93%
+[EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 26.01%
+--------------------------------
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-3d/wTDV_QSM_torch_3d.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-3d/wTDV_vz_torch_3d.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-3d/wTDV_zz_torch_3d.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color-3d/wTDV_sz_torch_3d.png
 '''
 '''
 =============================================================================

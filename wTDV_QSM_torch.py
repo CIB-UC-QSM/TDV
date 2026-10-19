@@ -21,7 +21,7 @@ args = parser.parse_known_args()[0]  # parse_known_args para no chocar con los a
 
 # Parámetros asociados a cada checkpoint, de grid_search_wtdv.py; tolUpdate es sobre el Update dentro del cerebro
 PARAMS = {
-    'tdv3-3-25-f32-color.pth': {'mu': 0.008, 'target_std': 0.06, 'tolUpdate': 0.3},
+    'tdv3-3-25-f32-color.pth': {'mu': 0.008, 'target_std': 0.06, 'tolUpdate': 0.4},
     't1p1delta-rapido-100k.pth': {'mu': 0.006, 'target_std': 0.06, 'tolUpdate': 0.3},
     't2delta-100k-s1.pth': {'mu': 0.004, 'target_std': 0.06, 'tolUpdate': 1.0},
     't8delta-100k-s1.pth': {'mu': 0.006, 'target_std': 0.07, 'tolUpdate': 0.75},
@@ -279,35 +279,36 @@ Iter: 0   Update: 100.0000 RMSE: 65.8201%
 [DEBUG] s1 (dual)       | Rango:  -0.0567 a   0.0649 | Media:  -0.0000 | Std:   0.0037
 --------------------------------
 
-
-Iter: 1   Update: 49.5622  RMSE: 43.2051%
-Iter: 2   Update: 17.6198  RMSE: 36.3514%
-Iter: 3   Update: 8.1289   RMSE: 33.3487%
-Iter: 4   Update: 4.9215   RMSE: 31.7137%
-Iter: 5   Update: 3.6680   RMSE: 30.5869%
-Iter: 6   Update: 2.8969   RMSE: 29.7877%
-Iter: 7   Update: 2.2635   RMSE: 29.1585%
-Iter: 8   Update: 1.8555   RMSE: 28.6572%
-Iter: 9   Update: 1.5920   RMSE: 28.2704%
-Iter: 10  Update: 1.3962   RMSE: 27.9725%
-Iter: 11  Update: 1.1888   RMSE: 27.7250%
-Iter: 12  Update: 1.0416   RMSE: 27.5213%
-Iter: 13  Update: 0.9277   RMSE: 27.3512%
-Iter: 14  Update: 0.8234   RMSE: 27.2102%
-Iter: 15  Update: 0.7335   RMSE: 27.0934%
-Iter: 16  Update: 0.6570   RMSE: 26.9967%
-Iter: 17  Update: 0.5916   RMSE: 26.9166%
-Iter: 18  Update: 0.5371   RMSE: 26.8507%
-Iter: 19  Update: 0.4931   RMSE: 26.7948%
-Iter: 20  Update: 0.4563   RMSE: 26.7479%
-Iter: 21  Update: 0.4247   RMSE: 26.7073%
-Iter: 22  Update: 0.3952   RMSE: 26.6722%
-Iter: 23  Update: 0.3675   RMSE: 26.6410%
-Iter: 24  Update: 0.3409   RMSE: 26.6136%
-Iter: 25  Update: 0.3165   RMSE: 26.5887%
-corrido en 55.93275690078735 segundos
+Iter: 1   Update: 49.5766  RMSE: 43.1759%
+Iter: 2   Update: 17.6966  RMSE: 36.3167%
+Iter: 3   Update: 8.1999   RMSE: 33.2949%
+Iter: 4   Update: 4.9554   RMSE: 31.6339%
+Iter: 5   Update: 3.6879   RMSE: 30.4854%
+Iter: 6   Update: 2.9200   RMSE: 29.6648%
+Iter: 7   Update: 2.2939   RMSE: 29.0199%
+Iter: 8   Update: 1.8836   RMSE: 28.5080%
+Iter: 9   Update: 1.6183   RMSE: 28.1158%
+Iter: 10  Update: 1.4211   RMSE: 27.8172%
+Iter: 11  Update: 1.2114   RMSE: 27.5728%
+Iter: 12  Update: 1.0627   RMSE: 27.3755%
+Iter: 13  Update: 0.9421   RMSE: 27.2144%
+Iter: 14  Update: 0.8327   RMSE: 27.0840%
+Iter: 15  Update: 0.7380   RMSE: 26.9785%
+Iter: 16  Update: 0.6588   RMSE: 26.8935%
+Iter: 17  Update: 0.5919   RMSE: 26.8248%
+Iter: 18  Update: 0.5394   RMSE: 26.7686%
+Iter: 19  Update: 0.4995   RMSE: 26.7225%
+Iter: 20  Update: 0.4657   RMSE: 26.6830%
+Iter: 21  Update: 0.4407   RMSE: 26.6498%
+Iter: 22  Update: 0.4128   RMSE: 26.6209%
+Iter: 23  Update: 0.3920   RMSE: 26.5959%
+corrido en 52.4 segundos
 
 [EVALUACIÓN] RMSE de Susceptibilidad (QSM predicha vs Cosmos): 26.57%
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_QSM_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_v_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_z1_torch.png
+Saved figure to: results/checkpoints/tdv3-3-25-f32-color/wTDV_s1_torch.png
 '''
 
 '''

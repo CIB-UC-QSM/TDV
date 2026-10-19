@@ -1,5 +1,0 @@
-mu=0.008   std=0.03   alpha=2.430    iters=65   Update final=0.152    RMSE final=30.08% min=29.37% (119 s)
-mu=0.008   std=0.09   alpha=7.289    iters=100  Update final=0.718    RMSE final=30.85% min=30.26% (168 s)
-mu=0.008   std=0.12   alpha=9.718    iters=100  Update final=0.127    RMSE final=30.13% min=29.94% (170 s)
-mu=0.008   std=0.18   alpha=14.577   iters=100  Update final=0.161    RMSE final=29.96% min=29.84% (170 s)
-mu=0.008   std=0.25   alpha=20.246   iters=50   Update final=0.193    RMSE final=30.86% min=30.86% (85 s)
